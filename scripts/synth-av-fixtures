@@ -39,7 +39,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="1.0.0"
 ABOUT="synth-av-fixtures $VERSION — deterministic cached A/V fixture synthesis for the validate streaming harness ($(uname -s)/$(uname -m))"
 
-CACHE_ROOT="${VALIDATE_AV_FIXTURE_DIR:-${TMPDIR:-/tmp}/validate-av-fixtures}"
+# Cache root is injectable and NEVER TMPDIR-derived: per-agent private
+# TMPDIRs silently relocate a TMPDIR-based cache and force duplicate
+# multi-GiB re-synthesis onto whatever backs /tmp — witnessed 2026-08-21 as
+# ~60% full I/O stall on thelio's mirrored-HDD ZFS pool (where /tmp is NOT
+# RAM). Precedence: explicit root env > deliberately provisioned devcache
+# dir (its existence+writability IS the provisioning signal) > stable
+# per-user XDG cache. --cache-dir overrides all of these (later-arg-wins).
+default_cache_root() {
+	if [ -n "${VALIDATE_AV_FIXTURE_DIR:-}" ]; then
+		printf '%s\n' "$VALIDATE_AV_FIXTURE_DIR"
+		return
+	fi
+	local devcache="${VALIDATE_AV_DEVCACHE_DIR:-/mnt/devcache}"
+	if [ -d "$devcache" ] && [ -w "$devcache" ]; then
+		printf '%s\n' "$devcache/validate-av-fixtures"
+		return
+	fi
+	printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/validate-av-fixtures"
+}
+CACHE_ROOT="$(default_cache_root)"
+PRINT_CACHE_ROOT=0
 TSV=0
 LIST=0
 ONLY=""
@@ -65,8 +85,13 @@ Options:
                     human progress goes to stderr.
   --only FAMS       Comma-separated subset of families (deps auto-included).
   --list            List known families and exit.
-  --cache-dir DIR   Override cache root (default: \$VALIDATE_AV_FIXTURE_DIR or
-                    \${TMPDIR:-/tmp}/validate-av-fixtures).
+  --cache-dir DIR   Override cache root (default: \$VALIDATE_AV_FIXTURE_DIR,
+                    else \$VALIDATE_AV_DEVCACHE_DIR[/mnt/devcache]/validate-av-fixtures
+                    when that dir exists and is writable, else
+                    \${XDG_CACHE_HOME:-\$HOME/.cache}/validate-av-fixtures;
+                    NEVER TMPDIR-derived).
+  --print-cache-root
+                    Print the resolved cache root and exit.
   --force           Ignore cache, resynthesize.
   --about           One-line description and version.
   -h, --help        This help.
@@ -89,12 +114,18 @@ while [ $# -gt 0 ]; do
 		--cache-dir) shift; CACHE_ROOT="${1:-}" ;;
 		--cache-dir=*) CACHE_ROOT="${1#--cache-dir=}" ;;
 		--force) FORCE=1 ;;
+		--print-cache-root) PRINT_CACHE_ROOT=1 ;;
 		--about) printf '%s\n' "$ABOUT"; exit 0 ;;
 		-h|--help|/h|/help) usage; exit 0 ;;
 		*) log "synth-av-fixtures: unknown argument: $1 (see --help)"; exit 2 ;;
 	esac
 	shift
 done
+
+if [ "$PRINT_CACHE_ROOT" -eq 1 ]; then
+	printf '%s\n' "$CACHE_ROOT"
+	exit 0
+fi
 
 if [ "$LIST" -eq 1 ]; then
 	printf '%s\n' $ALL_FAMILIES

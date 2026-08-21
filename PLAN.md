@@ -14,6 +14,25 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **HDD-saturation incident: AV fixture cache root made injectable and
+      TMPDIR-independent (Einstein urgent note, 2026-08-21):** three
+      concurrent streaming_ceiling runs (main gate + both worktree agents)
+      each re-synthesized their own multi-GiB fixture sets because the cache
+      root defaulted to `${TMPDIR:-/tmp}/validate-av-fixtures` and the agents
+      ran with private TMPDIRs; /tmp on thelio is mirrored-HDD ZFS (rpool),
+      NOT RAM — ~60% full I/O stall measured. All writers killed 15:41 EDT
+      and Einstein ACKed. Fix (TDD, red witnessed): resolution is now
+      `VALIDATE_AV_FIXTURE_DIR` > writable `$VALIDATE_AV_DEVCACHE_DIR`
+      (default `/mnt/devcache`) `/validate-av-fixtures` > XDG cache home,
+      never TMPDIR; `--print-cache-root` added; gated by
+      `tests/cli/av_fixture_root` (classifier over a TMPDIR set). 14GiB
+      cache rsynced to `/mnt/devcache/validate-av-fixtures`, old /tmp copy
+      Trashed. STANDING RULE: ceiling-class runs are serialized through the
+      coordinator — never concurrent across checkouts. Completed 2026-08-21
+      ~16:00 EDT. Curiosity poke: any other harness path that derives large
+      scratch from TMPDIR (corruption sweeps write per-trial files, small;
+      enumeration benchmarks?) deserves the same audit.
+
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
       Validate Founding Beta launches 2026-09-01; a named freeze commit +

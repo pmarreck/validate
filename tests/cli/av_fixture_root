@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# av_fixture_root — regression gate for AV fixture cache placement.
+#
+# Incident 2026-08-21 (Einstein, thelio): the fixture cache root defaulted to
+# ${TMPDIR:-/tmp}/validate-av-fixtures, so agents running with private
+# TMPDIRs silently relocated their cache roots and re-synthesized duplicate
+# multi-GiB fixture sets concurrently onto /tmp — which on that box is
+# mirrored-HDD ZFS, not RAM (~60% full I/O stall measured). The rule this
+# test enforces: fixture placement is INJECTABLE and NEVER TMPDIR-derived.
+#
+# Resolution order under test (see scripts/synth-av-fixtures):
+#   1. VALIDATE_AV_FIXTURE_DIR (exact root; --cache-dir flag overrides even
+#      that, later-arg-wins)
+#   2. $VALIDATE_AV_DEVCACHE_DIR (default /mnt/devcache) when it is an
+#      existing writable directory -> $it/validate-av-fixtures
+#   3. ${XDG_CACHE_HOME:-$HOME/.cache}/validate-av-fixtures
+#
+# Tested as a classifier over a SET of TMPDIR values (not one example):
+# every TMPDIR must map to the same root, and no output may lie under any
+# of them. --print-cache-root only resolves and prints; nothing here
+# synthesizes fixtures or touches the real cache.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SYNTH="$ROOT/scripts/synth-av-fixtures"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+[ -x "$SYNTH" ] || fail "synth-av-fixtures missing/not executable: $SYNTH"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/av_fixture_root.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+# Resolve with a controlled environment; only the vars under test vary.
+resolve() { # resolve [VAR=val ...] [-- extra args]
+	env -u VALIDATE_AV_FIXTURE_DIR -u VALIDATE_AV_DEVCACHE_DIR \
+		-u XDG_CACHE_HOME "HOME=$work/home" "$@" "$SYNTH" --print-cache-root
+}
+mkdir -p "$work/home"
+
+# --- 1. TMPDIR-independence over a set of TMPDIRs ---------------------------
+mkdir -p "$work/t1" "$work/t2" "$work/t3"
+r1="$(resolve TMPDIR="$work/t1")" || fail "--print-cache-root exited nonzero (flag missing?)"
+r2="$(resolve TMPDIR="$work/t2")" || fail "--print-cache-root exited nonzero"
+r3="$(resolve TMPDIR="$work/t3")" || fail "--print-cache-root exited nonzero"
+[ -n "$r1" ] || fail "empty cache root"
+[ "$r1" = "$r2" ] && [ "$r2" = "$r3" ] \
+	|| fail "cache root varies with TMPDIR: '$r1' / '$r2' / '$r3'"
+for t in "$work/t1" "$work/t2" "$work/t3"; do
+	case "$r1" in
+		"$t"|"$t"/*) fail "cache root '$r1' lies under TMPDIR '$t'" ;;
+	esac
+done
+
+# --- 2. VALIDATE_AV_FIXTURE_DIR wins exactly --------------------------------
+r="$(resolve TMPDIR="$work/t1" VALIDATE_AV_FIXTURE_DIR="$work/injected")" \
+	|| fail "--print-cache-root exited nonzero with VALIDATE_AV_FIXTURE_DIR"
+[ "$r" = "$work/injected" ] \
+	|| fail "VALIDATE_AV_FIXTURE_DIR not honored: got '$r'"
+
+# --- 3. --cache-dir flag overrides even the env ------------------------------
+r="$(env "VALIDATE_AV_FIXTURE_DIR=$work/injected" "$SYNTH" \
+	--cache-dir "$work/flagged" --print-cache-root)" \
+	|| fail "--print-cache-root exited nonzero with --cache-dir"
+[ "$r" = "$work/flagged" ] \
+	|| fail "--cache-dir did not override env: got '$r'"
+
+# --- 4. Devcache branch: existing writable dir is preferred ------------------
+mkdir -p "$work/devcache"
+r="$(resolve TMPDIR="$work/t1" VALIDATE_AV_DEVCACHE_DIR="$work/devcache")" \
+	|| fail "--print-cache-root exited nonzero with devcache present"
+[ "$r" = "$work/devcache/validate-av-fixtures" ] \
+	|| fail "writable devcache dir not preferred: got '$r'"
+
+# --- 5. Devcache absent -> stable XDG/HOME fallback, still TMPDIR-free -------
+r="$(resolve TMPDIR="$work/t1" VALIDATE_AV_DEVCACHE_DIR="$work/nonexistent")" \
+	|| fail "--print-cache-root exited nonzero with devcache absent"
+[ "$r" = "$work/home/.cache/validate-av-fixtures" ] \
+	|| fail "XDG/HOME fallback wrong: got '$r'"
+rx="$(resolve TMPDIR="$work/t1" VALIDATE_AV_DEVCACHE_DIR="$work/nonexistent" \
+	XDG_CACHE_HOME="$work/xdg")" \
+	|| fail "--print-cache-root exited nonzero with XDG_CACHE_HOME"
+[ "$rx" = "$work/xdg/validate-av-fixtures" ] \
+	|| fail "XDG_CACHE_HOME not honored: got '$rx'"
+
+echo "PASS: AV fixture root is injectable, ordered env>devcache>XDG, and never TMPDIR-derived"
