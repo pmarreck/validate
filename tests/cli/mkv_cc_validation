@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# MFIC differential gate for Matroska ContentCompression (zlib) validation.
+#
+# The committed fixtures are an mkvmerge --compression 0:zlib remux of the
+# h264_aac ground-truth mkv (mkvmerge writes NO cluster CRC-32, so nothing
+# shields the decode path) and a corrupt twin with ONE bit flipped inside a
+# zlib-compressed video block (offset 32947, bit 1 — sweep seed 42 trial 0).
+#
+# Witnessed-red: the pre-conversion binary (5c349fd5) passed the corrupt twin
+# as VALID — compressed frames silently failed Annex-B conversion, the
+# "decode" saw only the SPS/PPS prefix, and zlib-CC sniper detection measured
+# 4/150. The conversion inflates every frame (bounded window walk), so the
+# flip breaks the zlib stream and MUST be detected; the clean twin MUST stay
+# valid (zero new false positives).
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+case "$VALIDATE_BIN" in
+	/*) ;;
+	*) VALIDATE_BIN="$(cd "$(dirname "$VALIDATE_BIN")" && pwd)/$(basename "$VALIDATE_BIN")" ;;
+esac
+
+FIX="$PROJECT_ROOT/tests/fixtures/mkv_cc"
+CLEAN="$FIX/h264_zlib.mkv"
+CORRUPT="$FIX/h264_zlib_corrupt.mkv"
+# Committed fixtures; a miss is a real defect -> FAIL.
+for p in "$CLEAN" "$CORRUPT"; do
+	if [[ ! -f "$p" ]]; then
+		echo "FAIL: missing committed fixture $p" >&2
+		exit 1
+	fi
+done
+
+failures=0
+
+out=$("$VALIDATE_BIN" --ndjson "$CLEAN" 2>/dev/null); rc=$?
+if [[ $rc -eq 0 ]] && printf '%s' "$out" | grep -q '"valid":true'; then
+	echo "PASS: clean zlib-ContentCompression MKV -> valid"
+else
+	echo "FAIL: clean CC mkv expected valid:true/rc0; got rc=$rc :: $out"
+	failures=$((failures + 1))
+fi
+
+out=$("$VALIDATE_BIN" --ndjson "$CORRUPT" 2>/dev/null); rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q '"valid":false'; then
+	echo "PASS: bit flip inside zlib-compressed video block DETECTED"
+else
+	echo "FAIL: corrupt CC mkv expected valid:false; got rc=$rc :: $out"
+	failures=$((failures + 1))
+fi
+
+if [[ $failures -eq 0 ]]; then
+	echo "=== mkv_cc zlib-ContentCompression differential gate passed ==="
+	exit 0
+fi
+exit 1
