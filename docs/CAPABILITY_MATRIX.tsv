@@ -152,8 +152,8 @@ odp	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corp
 ods	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 odt	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 ofx	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
-ogg	audio	full	full	2/2	20/20	transparent	-	opus_ogg:resident;vorbis_ogg:resident	deep	-
-ogv	video	full	full	2/2	0/0	transparent	-	theora_ogv:resident	deep	-
+ogg	audio	full	full	2/2	20/20	transparent	-	opus_ogg:streams;vorbis_ogg:streams	deep	-
+ogv	video	full	full	2/2	0/0	transparent	-	theora_ogv:streams	deep	-
 orf	image	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	-
 otf	font	full	full	2/2	5/5	transparent	-	-	deep	-
 pages	document	full	full	1/1	0/0	transparent	-	-	deep	-
