@@ -29,6 +29,7 @@ const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
 const heap = @import("heap.zig");
+const zlib = @import("zlib.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 
@@ -624,24 +625,197 @@ fn validateMp4SamplesLegacy(
     return decodeBitstreamForCodec(allocator, bitstream.items, video_codec, max_frames);
 }
 
+/// Per-frame safety cap for Matroska ContentCompression zlib inflation: a
+/// single compressed video access unit larger than this is not plausible
+/// payload, and an unbounded inflate would let a zip-bomb block defeat the
+/// streaming memory ceiling.
+const MKV_CC_MAX_INFLATED_FRAME_BYTES: usize = 50 * 1024 * 1024;
+
+/// Streaming MKV/WebM decode pass for H.264/HEVC/AV1: walk every frame of
+/// the video track into a bounded Annex-B window that is decoded and reset
+/// when full — the mkv_cc streaming conversion, mirroring the MP4 discipline
+/// of validateMp4SamplesWindowed. ContentCompression is honored per frame:
+/// algo=3 stripped headers are re-prefixed and algo=0 zlib payloads are
+/// INFLATED before conversion. Before this pass existed, zlib-compressed
+/// frames silently failed Annex-B conversion, the "decode" saw only the
+/// codec_private prefix, and a zlib-CC file passed with frames_decoded == 0
+/// (2.7% sniper detection wearing a "fully validated" label). Anonymous
+/// memory is O(window + one inflated frame), independent of file size.
+/// complexity: O(n) over file bytes, O(window) resident
+fn validateMkvFramesWindowed(
+    allocator: Allocator,
+    parser: *ebml.MatroskaParser,
+    video_track: ebml.VideoTrackInfo,
+    video_codec: VideoCodec,
+    nal_length_size: u8,
+    max_frames: u32,
+    prefix: []const u8,
+) VideoValidationResult {
+    const scratch = heap.reclaimingScratchAllocator();
+
+    var window = AnnexBWindow.init(scratch, MP4_DECODE_WINDOW_BYTES, prefix) orelse
+        return VideoValidationResult.invalid("Memory allocation failed", video_codec);
+    defer window.deinit();
+
+    const WalkCtx = struct {
+        allocator: Allocator,
+        scratch: Allocator,
+        window: *AnnexBWindow,
+        codec: VideoCodec,
+        nal_length_size: u8,
+        comp_header: ?[]const u8,
+        comp_zlib: bool,
+        max_frames: u32,
+        frames_total: u32 = 0,
+        frames_appended: u32 = 0,
+        warning: ?[]const u8 = null,
+        fail: ?VideoValidationResult = null,
+
+        fn flushWindow(self: *@This()) bool {
+            if (self.frames_total >= self.max_frames) {
+                self.window.reset();
+                return true;
+            }
+            const remaining = self.max_frames - self.frames_total;
+            var flush = decodeBitstreamForCodec(self.allocator, self.window.items(), self.codec, remaining);
+            if (!flush.valid) {
+                flush.frames_decoded = self.frames_total +| flush.frames_decoded;
+                self.fail = flush;
+                return false;
+            }
+            self.frames_total = self.frames_total +| flush.frames_decoded;
+            if (self.warning == null) self.warning = flush.warning_message;
+            self.window.reset();
+            return true;
+        }
+
+        fn consume(ctx_opaque: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+            _ = timestamp;
+            const self: *@This() = @ptrCast(@alignCast(ctx_opaque.?));
+
+            var owned: ?[]u8 = null;
+            defer if (owned) |buf| self.scratch.free(buf);
+            const data = blk: {
+                if (self.comp_zlib) {
+                    // A zlib frame that will not inflate is real corruption
+                    // in a declared-zlib track — fail, never skip silently.
+                    const inflated = zlib.inflateZlibAlloc(self.scratch, frame, MKV_CC_MAX_INFLATED_FRAME_BYTES) catch |err| {
+                        self.fail = VideoValidationResult.invalid(switch (err) {
+                            error.DecompressedTooLarge => "MKV ContentCompression frame exceeds inflate safety cap",
+                            error.OutOfMemory => "Memory allocation failed",
+                            else => "MKV ContentCompression zlib inflate failed",
+                        }, self.codec);
+                        return false;
+                    };
+                    owned = inflated;
+                    break :blk @as([]const u8, inflated);
+                }
+                if (self.comp_header) |hdr| {
+                    const full = self.scratch.alloc(u8, hdr.len + frame.len) catch return true; // legacy parity: skip frame on alloc failure
+                    @memcpy(full[0..hdr.len], hdr);
+                    @memcpy(full[hdr.len..], frame);
+                    owned = full;
+                    break :blk @as([]const u8, full);
+                }
+                break :blk frame;
+            };
+
+            const converted_size: usize = if (self.codec == .av1)
+                data.len
+            else
+                // Legacy parity: a frame that does not parse as
+                // length-prefixed NALs is skipped, not fatal.
+                annexBConvertedSize(data, self.nal_length_size) orelse return true;
+
+            if (!self.window.fits(converted_size)) {
+                if (self.window.payloadLen() > 0) {
+                    if (!self.flushWindow()) return false;
+                }
+                if (!self.window.fits(converted_size)) {
+                    if (!self.window.ensureCapacityForPayload(converted_size)) return true; // skip oversized frame on alloc failure
+                }
+            }
+
+            const dest = self.window.appendSpace(converted_size) orelse return true;
+            if (self.codec == .av1) {
+                @memcpy(dest, data);
+            } else {
+                const written = convertToAnnexBInto(data, self.nal_length_size, dest);
+                std.debug.assert(written == converted_size);
+            }
+            self.frames_appended += 1;
+            return true;
+        }
+    };
+
+    var ctx = WalkCtx{
+        .allocator = allocator,
+        .scratch = scratch,
+        .window = &window,
+        .codec = video_codec,
+        .nal_length_size = nal_length_size,
+        .comp_header = video_track.content_comp_header,
+        .comp_zlib = video_track.content_comp_zlib,
+        .max_frames = max_frames,
+    };
+
+    const walked = parser.walkTrackFrames(video_track.track_number, max_frames, false, @ptrCast(&ctx), WalkCtx.consume);
+    if (ctx.fail) |f| return f;
+
+    if (walked == null or ctx.frames_appended == 0) {
+        // Legacy parity: a malformed block aborted the walk, or no frame
+        // ever survived Annex-B conversion. The old path decoded whatever
+        // the bitstream held — exactly the codec_private prefix — and
+        // returned that verdict; keep that here so niche non-NAL framings
+        // do not become new false positives.
+        return decodeBitstreamForCodec(allocator, prefix, video_codec, max_frames);
+    }
+
+    if (window.payloadLen() > 0 and ctx.frames_total < max_frames) {
+        if (!ctx.flushWindow()) {
+            return ctx.fail.?;
+        }
+    }
+
+    var ok = VideoValidationResult.okDecoded(video_codec, ctx.frames_total);
+    ok.warning_message = ctx.warning;
+    return ok;
+}
+
 const MkvFrameValidationContext = struct {
 	codec: VideoCodec,
 	nal_length_size: u8,
 	mixed_nal_prefix: bool,
 	comp_header: ?[]const u8,
-	allocator: Allocator,
+	comp_zlib: bool,
 };
 
 fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
-	// If header stripping is active, prepend the stripped bytes
-	const frame_data = if (ctx.comp_header) |hdr| blk: {
-		const full = ctx.allocator.alloc(u8, hdr.len + data.len) catch return false;
-		@memcpy(full[0..hdr.len], hdr);
-		@memcpy(full[hdr.len..], data);
-		break :blk full;
-	} else data;
-	defer if (ctx.comp_header != null) ctx.allocator.free(frame_data);
+	// Scratch must actually reclaim per frame — under the FFI per-task arena
+	// a plain free() is a no-op and this walk would accumulate one inflated
+	// copy of every frame (whole-file-proportional anonymous memory).
+	const scratch = heap.reclaimingScratchAllocator();
+	var owned: ?[]u8 = null;
+	defer if (owned) |buf| scratch.free(buf);
+	const frame_data = blk: {
+		// ContentCompression zlib (algo=0): the block payload is a zlib
+		// stream; codec-level byte validation must see the inflated bytes.
+		if (ctx.comp_zlib) {
+			const inflated = zlib.inflateZlibAlloc(scratch, data, MKV_CC_MAX_INFLATED_FRAME_BYTES) catch return false;
+			owned = inflated;
+			break :blk @as([]const u8, inflated);
+		}
+		// Header stripping (algo=3): prepend the stripped bytes
+		if (ctx.comp_header) |hdr| {
+			const full = scratch.alloc(u8, hdr.len + data.len) catch return false;
+			@memcpy(full[0..hdr.len], hdr);
+			@memcpy(full[hdr.len..], data);
+			owned = full;
+			break :blk @as([]const u8, full);
+		}
+		break :blk data;
+	};
 
 	return switch (ctx.codec) {
 		.av1 => validateAv1ObuStream(frame_data),
@@ -816,7 +990,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
             .nal_length_size = nal_length_size,
             .mixed_nal_prefix = false,
             .comp_header = video_track.content_comp_header,
-            .allocator = allocator,
+            .comp_zlib = video_track.content_comp_zlib,
         };
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
@@ -888,6 +1062,29 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
             byte_validated = true;
             mixed_nal_prefix = ctx.mixed_nal_prefix;
         }
+    }
+
+    // H.264/HEVC/AV1: streaming decode through a bounded Annex-B window
+    // (see validateMkvFramesWindowed) instead of collecting every frame of
+    // the file into anonymous memory — the whole-file residency that OOMed
+    // the mkv_cc family at the 512MiB streaming ceiling. Requires the
+    // codec_private prefix so each flushed window self-initializes; without
+    // it fall through to the legacy whole-bitstream path below.
+    if ((video_codec == .h264 or video_codec == .hevc or video_codec == .av1) and bitstream.items.len > 0) {
+        var result = validateMkvFramesWindowed(
+            allocator,
+            &parser,
+            video_track,
+            video_codec,
+            nal_length_size,
+            max_frames,
+            bitstream.items,
+        );
+        if (byte_validated) {
+            result.byte_validated = true;
+        }
+        result.mixed_nal_prefix = mixed_nal_prefix;
+        return result;
     }
 
     // VP8/VP9 on mapped sources: decode from zero-copy frame refs into the
@@ -4067,4 +4264,29 @@ test "sample scratch growth preserves the old allocation when allocation fails" 
 	try std.testing.expectEqual(@as(usize, 8), scratch.len);
 	try std.testing.expectEqual(@as(u8, 0xA5), scratch[0]);
 	allocator.free(scratch);
+}
+
+// The mkv_cc honesty gate: a zlib-ContentCompression H.264 track must have
+// its frames INFLATED and genuinely decoded. Pre-conversion, the compressed
+// payloads silently failed Annex-B conversion, the "decode" saw only the
+// SPS/PPS prefix, and the file passed with frames_decoded == 0 — 2.7% sniper
+// detection wearing a "fully validated" label.
+test "validateMkvVideo decodes real frames from zlib-ContentCompression H.264" {
+	const path = "tests/fixtures/mkv_cc/h264_zlib.mkv";
+	const file = runtime.openFile(path, .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer file.close(runtime.io());
+	const stat = try file.stat(runtime.io());
+	const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
+	defer std.testing.allocator.free(data);
+	const n = try file.readPositionalAll(runtime.io(), data, 0);
+	try std.testing.expect(n == data.len);
+
+	var source = FileSource.fromBuffer(data);
+	const result = validateMkvVideo(std.testing.allocator, &source, 10000);
+	try std.testing.expect(result.valid);
+	try std.testing.expectEqual(VideoCodec.h264, result.codec);
+	try std.testing.expect(result.frames_decoded > 0);
 }

@@ -52,12 +52,19 @@
 # raw TSVs byte-identical; zero new false positives on 8 known-good.
 #
 # mkv_cc was originally UNWITNESSED (mkvmerge absent on the baseline box);
-# its row was inferred `streams` from the sibling matroska demux path
-# (h265_mkv). The first real witness (2026-08-19, mkvmerge now present,
-# binary 2b021ad3, NixOS x86_64 Thelio) proved that inference WRONG:
-# observed resident, rc=137 under the 512MiB cgroup ceiling, while an uncapped
-# /proc measurement showed peak RssAnon 2.21 GiB on the 2.26 GB fixture. Row
-# corrected to the observed truth; conversion remains follow-up work.
+# its inferred `streams` row was proven WRONG at first witness (2026-08-19:
+# resident, rc=137, peak RssAnon 2.21 GiB on the 2.26 GB fixture) and
+# corrected to resident. CONVERTED 2026-08-21: the MKV h264/hevc/av1 decode
+# now walks frames into the same bounded Annex-B window as MP4
+# (validateMkvFramesWindowed), honoring ContentCompression per frame —
+# algo=3 stripped headers re-prefixed, algo=0 zlib payloads INFLATED into
+# reclaiming scratch (bounded, 50MiB/frame cap). The inflate also closes an
+# honesty hole: pre-conversion, zlib frames silently failed Annex-B
+# conversion, the "decode" saw only the SPS/PPS prefix, and a zlib-CC file
+# passed as "fully validated" with frames_decoded == 0 — sniper detection
+# measured 4/150. Post-conversion: 56/150 sniper, 61/150 bolter (was 6),
+# 115/150 shotgun (was 70), strict per-trial superset (no previously-caught
+# trial lost); non-zlib no-CRC mkv per-trial verdicts byte-identical.
 #
 # vp9_webm converted to `streams` 2026-08-19: VP8/VP9 on mapped sources now
 # decodes from zero-copy frame refs into the mmap (collectAllFrameRefs) with
@@ -69,14 +76,14 @@
 # (first cluster child 0xBF → CRC-only fast path) but NOT for webm (first
 # child 0xE7 Timestamp), so vp9_webm always fell to the decode path, whose
 # collectAllFrames copied every compressed frame into anonymous memory.
-# mkv_cc stays resident for the same no-CRC reason (mkvmerge writes none) —
-# its h264 decode branch still copies frames.
+# (mkv_cc was resident for the same no-CRC reason until its own conversion
+# above.)
 h264_mp4	streams
 h265_mp4	streams
 h265_mkv	streams
 vp9_webm	streams
 theora_ogv	streams
-mkv_cc	resident
+mkv_cc	streams
 mp3	streams
 flac	streams
 aac_m4a	streams

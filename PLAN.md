@@ -33,6 +33,26 @@ at the bottom. Older completed sections were rolled up — full history lives in
       scratch from TMPDIR (corruption sweeps write per-trial files, small;
       enumeration benchmarks?) deserves the same audit.
 
+- [x] **#23 mkv_cc streaming conversion (2026-08-21):** MKV h264/hevc/av1
+      decode converted from collect-every-frame + whole-file bitstream to the
+      bounded Annex-B window walk (validateMkvFramesWindowed, mirroring the
+      MP4 AnnexBWindow discipline), with ContentCompression honored per
+      frame: algo=3 headers re-prefixed, algo=0 zlib INFLATED into
+      reclaiming scratch (50MiB/frame cap; ContentCompAlgo's spec default 0
+      now recognized when mkvmerge omits the child). This also closed an
+      honesty hole: zlib-CC files previously passed "fully validated" with
+      frames_decoded == 0 (decode saw only the SPS/PPS prefix) — zlib-CC
+      sniper detection was 4/150, now 56/150 (bolter 6→61, shotgun 70→115,
+      strict per-trial superset). Non-zlib no-CRC mkv verdicts byte-identical
+      before/after; 12/12 known-good clean. Committed differential fixtures
+      tests/fixtures/mkv_cc/ + CLI gate tests/cli/mkv_cc_validation
+      (old binary passes the corrupt twin, new binary detects it —
+      witnessed). Byte-coverage walk (validateMkvFrameBytes) also inflates
+      zlib now. Ceiling witness + row flip in the conversion commit.
+      RESIDUAL noted: no-CRC h264-in-MKV detection is weak even with real
+      decode (plain mkvmerge remux: 1/150 sniper before AND after — h264
+      syntax leniency, pre-existing, worth its own task); Opus-in-MKV audio
+      still whole-track-copies (collectAllFramesWithStatus).
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
       Validate Founding Beta launches 2026-09-01; a named freeze commit +

@@ -126,7 +126,7 @@ mblar	archive	full	full	1/1	0/0	transparent	-	-	deep	-
 mbox	text	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
 mdb	database	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 midi	audio	full	full	2/2	3/5	transparent	-	-	deep	-
-mkv	video	full	full	13/13	10/10	transparent	-	h265_mkv:streams;mkv_cc:resident	deep	-
+mkv	video	full	full	13/13	10/10	transparent	-	h265_mkv:streams;mkv_cc:streams	deep	-
 mod	audio	full	full	1/1	0/5	mixed	-	-	deep	-
 mov	video	full	full	8/8	4/9	mixed	-	-	deep	-
 mp2	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus

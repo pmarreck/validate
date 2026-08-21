@@ -573,6 +573,10 @@ pub const VideoTrackInfo = struct {
     // ContentCompression header stripping (algo=3): bytes to prepend to each frame
     content_comp_header: ?[]const u8, // Heap allocated
     content_comp_allocator: ?Allocator,
+    // ContentCompression zlib (algo=0, mkvmerge --compression N:zlib): every
+    // block payload of this track is an independent zlib stream that must be
+    // inflated before any codec-level parsing sees it.
+    content_comp_zlib: bool,
 
     pub fn codecId(self: *const VideoTrackInfo) []const u8 {
         return self.codec_id_buf[0..self.codec_id_len];
@@ -794,6 +798,7 @@ pub const MatroskaParser = struct {
             .default_duration = null,
             .content_comp_header = null,
             .content_comp_allocator = null,
+            .content_comp_zlib = false,
         };
 
         var track_type: u8 = 0;
@@ -876,10 +881,12 @@ pub const MatroskaParser = struct {
 
                             var comp_algo: ?u64 = null;
                             var comp_settings: ?[]const u8 = null;
+                            var saw_compression = false;
 
                             while ((self.reader.getPos() orelse ce_end) < ce_end) {
                                 const ce_child = self.reader.readElementHeader() orelse break;
                                 if (ce_child.id == ContentEncoding_ID.ContentCompression) {
+                                    saw_compression = true;
                                     const cc_end = ce_child.data_offset + (ce_child.size orelse 0);
                                     _ = self.reader.seekTo(ce_child.data_offset);
 
@@ -909,6 +916,13 @@ pub const MatroskaParser = struct {
                                     result.content_comp_allocator = self.allocator;
                                 }
                             } else {
+                                // algo=0 means zlib per-block compression.
+                                // ContentCompAlgo's spec DEFAULT is 0, so a
+                                // ContentCompression element with the child
+                                // omitted (mkvmerge's encoding) is also zlib.
+                                if (saw_compression and (comp_algo == null or comp_algo.? == 0)) {
+                                    result.content_comp_zlib = true;
+                                }
                                 // Not header stripping — free settings if allocated
                                 if (comp_settings) |settings| {
                                     self.allocator.free(settings);
@@ -1375,7 +1389,7 @@ pub const MatroskaParser = struct {
     /// is false. Returns the total frame count, or null if a block was
     /// malformed or the consumer aborted. This is the single walk shared by
     /// the copying collector, the zero-copy ref collector, and walkFrames.
-    fn walkTrackFrames(
+    pub fn walkTrackFrames(
         self: *MatroskaParser,
         video_track_number: u64,
         max_frames: usize,
@@ -2309,4 +2323,52 @@ test "collectAllFrameRefs matches collectAllFrames byte-for-byte on committed VP
     for (copied, refs) |kf, ref| {
         try std.testing.expectEqualSlices(u8, kf.data, ref);
     }
+}
+
+// Matroska ContentCompression algo=0 (zlib, mkvmerge --compression 0:zlib)
+// must be RECOGNIZED on the track, or downstream validators feed raw zlib
+// bytes to codec parsers and silently validate nothing (the mkv_cc family's
+// pre-conversion state: 2.7% sniper detection with a "fully validated" label).
+test "parseTrackEntry flags zlib ContentCompression on the committed mkv_cc fixture" {
+    const path = "tests/fixtures/mkv_cc/h264_zlib.mkv";
+    const file = runtime.openFile(path, .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close(runtime.io());
+    const stat = try file.stat(runtime.io());
+    const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
+    defer std.testing.allocator.free(data);
+    const n = try file.readPositionalAll(runtime.io(), data, 0);
+    try std.testing.expect(n == data.len);
+
+    var source = FileSource.fromBuffer(data);
+    var parser = MatroskaParser.init(std.testing.allocator, &source);
+    _ = parser.parseEbmlHeader() orelse return error.TestEbmlHeaderParse;
+    const tracks_elem = parser.findSegmentChild(Segment_ID.Tracks) orelse return error.TestTracksElementMissing;
+    _ = parser.reader.seekTo(tracks_elem.data_offset);
+    const tracks_end = tracks_elem.data_offset + (tracks_elem.size orelse 0);
+
+    var video_track: ?VideoTrackInfo = null;
+    defer if (video_track) |*t| t.deinit();
+    while ((parser.reader.getPos() orelse tracks_end) < tracks_end) {
+        const entry = parser.reader.readElementHeader() orelse break;
+        const entry_end = entry.data_offset + (entry.size orelse 0);
+        if (entry.id == Tracks_ID.TrackEntry) {
+            if (parser.parseTrackEntry(entry)) |track| {
+                if (track.isH264()) {
+                    video_track = track;
+                    break;
+                }
+                var t = track;
+                t.deinit();
+            }
+        }
+        _ = parser.reader.seekTo(entry_end);
+    }
+
+    const track = video_track orelse return error.TestUnexpectedResult;
+    try std.testing.expect(track.content_comp_zlib);
+    // zlib is algo 0 — the header-stripping bytes (algo 3) must stay null.
+    try std.testing.expect(track.content_comp_header == null);
 }
