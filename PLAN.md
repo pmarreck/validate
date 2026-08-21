@@ -173,6 +173,29 @@ at the bottom. Older completed sections were rolled up — full history lives in
       access units" false-positive class confirmed dead on its last
       outstanding real-world cluster. Completed 2026-08-19 12:52 EDT.
 
+- [x] **#31 vp9_webm streaming conversion (Peter, 2026-08-19):** VP8/VP9 in
+      MKV/WebM on mapped sources now decodes from zero-copy frame refs into
+      the mmap (`collectAllFrameRefs`; shared walk extracted as
+      `walkTrackFrames`) instead of `collectAllFrames` copying every
+      compressed frame into anonymous memory. libvpx instance count is capped
+      by a 256MiB decoder-memory budget (`maxDecodersForDims`, from track
+      dims); budget-capped instances get libvpx row-mt internal threads
+      (cpu/instances, ≤4). Ceiling gate: 2GiB WebM at 512MiB cgroup went
+      OOM rc=137 → rc=0 in 45s, peak RssAnon ~200MiB. Detection: 450/450
+      per-trial verdicts byte-identical (sniper 108/150, bolter 100/150,
+      shotgun 132/150 on jellyfish_vp9_opus.webm, seed 42); mkv slot still
+      150/150 ×3 modes; 10/10 known-good webm+mkv clean. Root cause of the
+      h265_mkv-vs-vp9_webm split: ffmpeg writes cluster CRC-32 for matroska
+      (CRC fast path streams) but NOT for webm (decode fallback copied the
+      file). SIDE FINDINGS: (a) mkv_cc first witnessed on Thelio — the
+      inferred `streams` was WRONG (mkvmerge writes no cluster CRCs; h264
+      decode path still copies frames); row corrected to `resident` per the
+      manifest's own rule — flip back only WITH an h264-path conversion.
+      (b) sweep slot `webm` was silently excluded since the identity
+      self-check landed (no webm→mkv equivalence); table entry added.
+      Non-mapped sources (Windows/mmap-fail/>8GB) still take the copying
+      path — a future conversion. Completed 2026-08-19 EDT.
+
 - [x] **Publish the Mecha Validate v1 integration contract:** define a
       machine-readable capability/result schema with the exact capability
       states `strict`, `partial`, `structural`, `unsupported`, and `blocked`,

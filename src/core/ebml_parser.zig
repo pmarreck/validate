@@ -1369,6 +1369,80 @@ pub const MatroskaParser = struct {
         };
     }
 
+    /// Shared segment→cluster→block walk: drives `consumer` over every frame
+    /// of `video_track_number` in stream order until `max_frames` frames have
+    /// been consumed. Lacing is split per-frame when `combine_laced_frames`
+    /// is false. Returns the total frame count, or null if a block was
+    /// malformed or the consumer aborted. This is the single walk shared by
+    /// the copying collector, the zero-copy ref collector, and walkFrames.
+    fn walkTrackFrames(
+        self: *MatroskaParser,
+        video_track_number: u64,
+        max_frames: usize,
+        combine_laced_frames: bool,
+        ctx: ?*anyopaque,
+        consumer: BlockFrameConsumerFn,
+    ) ?usize {
+        if (self.segment_offset == 0) {
+            if (!self.findSegment()) return null;
+        }
+
+        _ = self.reader.seekTo(self.segment_offset);
+        const segment_end = if (self.segment_size) |s|
+            self.segment_offset + s
+        else
+            self.reader.file_size;
+
+        var frames_consumed: usize = 0;
+        var current_cluster_timestamp: i64 = 0;
+
+        while ((self.reader.getPos() orelse segment_end) < segment_end and frames_consumed < max_frames) {
+            const element = self.reader.readElementHeader() orelse break;
+
+            if (element.id == Segment_ID.Cluster) {
+                const cluster_end = element.data_offset + (element.size orelse break);
+                _ = self.reader.seekTo(element.data_offset);
+
+                while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames_consumed < max_frames) {
+                    const cluster_child = self.reader.readElementHeader() orelse break;
+
+                    switch (cluster_child.id) {
+                        Cluster_ID.Timestamp => {
+                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
+                        },
+                        Cluster_ID.SimpleBlock => {
+                            frames_consumed += self.walkBlockFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                combine_laced_frames,
+                                ctx,
+                                consumer,
+                            ) orelse return null;
+                        },
+                        Cluster_ID.BlockGroup => {
+                            frames_consumed += self.walkBlockGroupFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                combine_laced_frames,
+                                ctx,
+                                consumer,
+                            ) orelse return null;
+                        },
+                        else => {
+                            _ = self.reader.skipElement(cluster_child);
+                        },
+                    }
+                }
+            } else {
+                _ = self.reader.skipElement(element);
+            }
+        }
+
+        return frames_consumed;
+    }
+
     /// Collect ALL frames (not just keyframes) into a list for full validation.
     /// Returns a list of frame data that must be freed by the caller.
     pub fn collectAllFrames(
@@ -1399,78 +1473,72 @@ pub const MatroskaParser = struct {
             }
         };
 
-        if (self.segment_offset == 0) {
-            if (!self.findSegment()) return null;
-        }
-
-        _ = self.reader.seekTo(self.segment_offset);
-        const segment_end = if (self.segment_size) |s|
-            self.segment_offset + s
-        else
-            self.reader.file_size;
-
         var frames: std.ArrayListUnmanaged(KeyframeData) = .empty;
-        errdefer {
-            for (frames.items) |*f| f.deinit();
-            frames.deinit(self.allocator);
-        }
         var collect_ctx = CollectContext{
             .allocator = self.allocator,
             .frames = &frames,
         };
 
-        var current_cluster_timestamp: i64 = 0;
-
-        while ((self.reader.getPos() orelse segment_end) < segment_end and frames.items.len < max_frames) {
-            const element = self.reader.readElementHeader() orelse break;
-
-            if (element.id == Segment_ID.Cluster) {
-                const cluster_end = element.data_offset + (element.size orelse break);
-                _ = self.reader.seekTo(element.data_offset);
-
-                while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames.items.len < max_frames) {
-                    const cluster_child = self.reader.readElementHeader() orelse break;
-
-                    switch (cluster_child.id) {
-                        Cluster_ID.Timestamp => {
-                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
-                        },
-                        Cluster_ID.SimpleBlock => {
-                            if (self.walkBlockFrames(
-                                cluster_child,
-                                video_track_number,
-                                current_cluster_timestamp,
-                                false,
-                                &collect_ctx,
-                                Collector.consume,
-                            ) == null) return null;
-                        },
-                        Cluster_ID.BlockGroup => {
-                            if (self.walkBlockGroupFrames(
-                                cluster_child,
-                                video_track_number,
-                                current_cluster_timestamp,
-                                false,
-                                &collect_ctx,
-                                Collector.consume,
-                            ) == null) return null;
-                        },
-                        else => {
-                            _ = self.reader.skipElement(cluster_child);
-                        },
-                    }
-                }
-            } else {
-                _ = self.reader.skipElement(element);
-            }
-        }
-
-        if (frames.items.len == 0) {
+        const walked = self.walkTrackFrames(video_track_number, max_frames, false, &collect_ctx, Collector.consume);
+        if (walked == null or frames.items.len == 0) {
+            for (frames.items) |*f| f.deinit();
             frames.deinit(self.allocator);
             return null;
         }
 
-        return frames.toOwnedSlice(self.allocator) catch null;
+        return frames.toOwnedSlice(self.allocator) catch {
+            for (frames.items) |*f| f.deinit();
+            frames.deinit(self.allocator);
+            return null;
+        };
+    }
+
+    /// Zero-copy sibling of collectAllFrames: returns slices INTO the source's
+    /// mapped/in-memory backing instead of heap copies, so a whole-file frame
+    /// walk adds no anonymous memory proportional to file size (the resident
+    /// OOM class the streaming_ceiling gate witnesses for VP8/VP9). ONLY valid
+    /// when `reader.file.isMapped()` — for file-backed sources the per-block
+    /// buffers these slices would point into are freed as each block is
+    /// walked, so this returns null there (caller falls back to the copying
+    /// collector). Also null on malformed blocks or zero frames. Caller frees
+    /// only the returned slice array, never the frame bytes.
+    pub fn collectAllFrameRefs(
+        self: *MatroskaParser,
+        video_track_number: u64,
+        max_frames: usize,
+    ) ?[]const []const u8 {
+        if (!self.reader.file.isMapped()) return null;
+
+        const RefContext = struct {
+            allocator: Allocator,
+            frames: *std.ArrayListUnmanaged([]const u8),
+        };
+
+        const RefCollector = struct {
+            pub fn consume(ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+                _ = timestamp;
+                const collect: *RefContext = @ptrCast(@alignCast(ctx.?));
+                collect.frames.append(collect.allocator, frame) catch return false;
+                return true;
+            }
+        };
+
+        var frames: std.ArrayListUnmanaged([]const u8) = .empty;
+        var ref_ctx = RefContext{
+            .allocator = self.allocator,
+            .frames = &frames,
+        };
+
+        const walked = self.walkTrackFrames(video_track_number, max_frames, false, &ref_ctx, RefCollector.consume);
+        if (walked == null or frames.items.len == 0) {
+            frames.deinit(self.allocator);
+            return null;
+        }
+
+        return frames.toOwnedSlice(self.allocator) catch {
+            frames.deinit(self.allocator);
+            return null;
+        };
     }
 
     /// Walk ALL frames (not just keyframes) and validate each frame via callback.
@@ -1495,70 +1563,13 @@ pub const MatroskaParser = struct {
             }
         };
 
-        if (self.segment_offset == 0) {
-            if (!self.findSegment()) return false;
-        }
-
-        _ = self.reader.seekTo(self.segment_offset);
-        const segment_end = if (self.segment_size) |s|
-            self.segment_offset + s
-        else
-            self.reader.file_size;
-
-        var frames_validated: usize = 0;
         var validate_ctx = ValidateContext{
             .ctx = ctx,
             .validator = validator,
         };
-        var current_cluster_timestamp: i64 = 0;
 
-        while ((self.reader.getPos() orelse segment_end) < segment_end and frames_validated < max_frames) {
-            const element = self.reader.readElementHeader() orelse break;
-
-            if (element.id == Segment_ID.Cluster) {
-                const cluster_end = element.data_offset + (element.size orelse break);
-                _ = self.reader.seekTo(element.data_offset);
-
-                while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames_validated < max_frames) {
-                    const cluster_child = self.reader.readElementHeader() orelse break;
-
-                    switch (cluster_child.id) {
-                        Cluster_ID.Timestamp => {
-                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
-                        },
-                        Cluster_ID.SimpleBlock => {
-                            const result = self.walkBlockFrames(
-                                cluster_child,
-                                video_track_number,
-                                current_cluster_timestamp,
-                                true,
-                                &validate_ctx,
-                                Adapter.consume,
-                            ) orelse return false;
-                            frames_validated += result;
-                        },
-                        Cluster_ID.BlockGroup => {
-                            const result = self.walkBlockGroupFrames(
-                                cluster_child,
-                                video_track_number,
-                                current_cluster_timestamp,
-                                true,
-                                &validate_ctx,
-                                Adapter.consume,
-                            ) orelse return false;
-                            frames_validated += result;
-                        },
-                        else => {
-                            _ = self.reader.skipElement(cluster_child);
-                        },
-                    }
-                }
-            } else {
-                _ = self.reader.skipElement(element);
-            }
-        }
-
-        return frames_validated > 0;
+        const walked = self.walkTrackFrames(video_track_number, max_frames, true, &validate_ctx, Adapter.consume) orelse return false;
+        return walked > 0;
     }
 
     /// Debug: emit details for the first frame that fails byte validation.
@@ -2245,4 +2256,57 @@ test "parseBlockHeader basic fields" {
     try std.testing.expectEqual(@as(u8, 0x02), header.flags);
     try std.testing.expectEqual(@as(u2, 1), header.lacing);
     try std.testing.expectEqual(@as(usize, 4), header.header_bytes);
+}
+
+// MFIC differential: the zero-copy frame walk (collectAllFrameRefs) must yield
+// byte-identical frames, in identical order, to the copying collector
+// (collectAllFrames) whose behavior the corruption sweeps certified. The refs
+// variant exists so VP8/VP9 decode validation can stream a whole file without
+// duplicating every compressed frame into anonymous memory (the OOM class the
+// streaming_ceiling gate witnesses on 2GiB fixtures at a 512MiB ceiling).
+test "collectAllFrameRefs matches collectAllFrames byte-for-byte on committed VP9 fixture" {
+    const path = "tests/fixtures/vp9/vp9_multikf.webm";
+    const file = runtime.openFile(path, .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close(runtime.io());
+    const stat = try file.stat(runtime.io());
+    const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
+    defer std.testing.allocator.free(data);
+    const n = try file.readPositionalAll(runtime.io(), data, 0);
+    try std.testing.expect(n == data.len);
+
+    // Locate the first video track number by parsing the Tracks element.
+    var source_a = FileSource.fromBuffer(data);
+    var parser_a = MatroskaParser.init(std.testing.allocator, &source_a);
+    _ = parser_a.parseEbmlHeader() orelse return error.TestUnexpectedResult;
+    const tracks_elem = parser_a.findSegmentChild(Segment_ID.Tracks) orelse return error.TestUnexpectedResult;
+    _ = parser_a.reader.seekTo(tracks_elem.data_offset);
+    const entry = parser_a.reader.readElementHeader() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(Tracks_ID.TrackEntry, entry.id);
+    var track = parser_a.parseTrackEntry(entry) orelse return error.TestUnexpectedResult;
+    defer track.deinit();
+
+    const copied = parser_a.collectAllFrames(track.track_number, std.math.maxInt(u32)) orelse
+        return error.TestUnexpectedResult;
+    defer {
+        for (copied) |*f| {
+            var mutable_f = @constCast(f);
+            mutable_f.deinit();
+        }
+        std.testing.allocator.free(copied);
+    }
+
+    var source_b = FileSource.fromBuffer(data);
+    var parser_b = MatroskaParser.init(std.testing.allocator, &source_b);
+    const refs = parser_b.collectAllFrameRefs(track.track_number, std.math.maxInt(u32)) orelse
+        return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expect(copied.len > 1);
+    try std.testing.expectEqual(copied.len, refs.len);
+    for (copied, refs) |kf, ref| {
+        try std.testing.expectEqualSlices(u8, kf.data, ref);
+    }
 }

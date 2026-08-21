@@ -58,10 +58,23 @@
 # observed resident, rc=137 under the 512MiB cgroup ceiling, while an uncapped
 # /proc measurement showed peak RssAnon 2.21 GiB on the 2.26 GB fixture. Row
 # corrected to the observed truth; conversion remains follow-up work.
+#
+# vp9_webm converted to `streams` 2026-08-19: VP8/VP9 on mapped sources now
+# decodes from zero-copy frame refs into the mmap (collectAllFrameRefs) with
+# the libvpx instance count capped by a 256MiB decoder-memory budget
+# (maxDecodersForDims); budget-capped instances get libvpx row-mt internal
+# threads. Witnessed rc=0 at 44s under the 512MiB ceiling, peak RssAnon
+# ~200MiB on the 2GiB fixture (was: OOM rc=137 at 3s). Why vp9_webm was ever
+# resident when h265_mkv streamed: ffmpeg writes cluster CRC-32 for matroska
+# (first cluster child 0xBF → CRC-only fast path) but NOT for webm (first
+# child 0xE7 Timestamp), so vp9_webm always fell to the decode path, whose
+# collectAllFrames copied every compressed frame into anonymous memory.
+# mkv_cc stays resident for the same no-CRC reason (mkvmerge writes none) —
+# its h264 decode branch still copies frames.
 h264_mp4	streams
 h265_mp4	streams
 h265_mkv	streams
-vp9_webm	resident
+vp9_webm	streams
 theora_ogv	streams
 mkv_cc	resident
 mp3	streams

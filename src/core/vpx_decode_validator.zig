@@ -225,22 +225,49 @@ fn isKeyframe(codec: VpxCodec, frame: []const u8) bool {
     }
 }
 
+/// Anonymous-memory budget for concurrent libvpx decoder instances during
+/// segment-parallel decode. Each VP9 decoder owns a reference-frame pool
+/// (8 ref slots + working/new frames ≈ 12 YUV 4:2:0 buffers) whose size
+/// scales with frame area; bounding the instance count by this budget keeps
+/// whole-file validation inside the streaming memory ceiling (512MiB for
+/// 2GiB+ video, tests/cli/streaming_ceiling) regardless of host core count.
+const decoder_memory_budget_bytes: u64 = 256 * 1024 * 1024;
+const yuv420_buffers_per_decoder: u64 = 12;
+
+/// Max concurrent libvpx decoder instances that fit the anonymous-memory
+/// budget for the given frame dimensions (0 → assume 1080p; dims clamped to
+/// the VP9 maximum of 65536 so hostile track headers cannot overflow).
+pub fn maxDecodersForDims(width: u64, height: u64) usize {
+    const w: u64 = @min(if (width == 0) 1920 else width, 65536);
+    const h: u64 = @min(if (height == 0) 1080 else height, 65536);
+    const yuv420_bytes = w * h * 3 / 2;
+    const per_decoder = yuv420_bytes * yuv420_buffers_per_decoder;
+    const n = decoder_memory_budget_bytes / per_decoder;
+    return @intCast(@max(n, 1));
+}
+
 const SegCtx = struct {
     codec: VpxCodec,
     frames: []const []const u8,
     bounds: []const usize, // segment i = frames[bounds[i]..bounds[i+1]]
     next: std.atomic.Value(usize),
     results: []VpxDecodeResult,
+    /// libvpx-internal worker threads per decoder instance (row-mt/tile
+    /// threading). >1 when the decoder-instance count is memory-budget-capped
+    /// below the core count, so idle cores still help inside each instance.
+    internal_threads: u32,
 };
 
-/// Worker: pull segment indices off the shared counter and decode each with a
-/// single-threaded libvpx instance (segment-level parallelism fills the cores).
+/// Worker: pull segment indices off the shared counter and decode each with
+/// its own libvpx instance (segment-level parallelism fills the cores; each
+/// instance may additionally use internal row-mt threads when instances are
+/// memory-capped below the core count).
 fn segWorker(ctx: *SegCtx) void {
     while (true) {
         const i = ctx.next.fetchAdd(1, .monotonic);
         if (i >= ctx.results.len) break;
         const seg = ctx.frames[ctx.bounds[i]..ctx.bounds[i + 1]];
-        ctx.results[i] = validateFramesWithThreads(ctx.codec, seg, 1);
+        ctx.results[i] = validateFramesWithThreads(ctx.codec, seg, ctx.internal_threads);
     }
 }
 
@@ -254,6 +281,18 @@ pub fn validateFramesParallel(
     allocator: std.mem.Allocator,
     codec: VpxCodec,
     frames: []const []const u8,
+) VpxDecodeResult {
+    return validateFramesParallelBudget(allocator, codec, frames, std.math.maxInt(usize));
+}
+
+/// validateFramesParallel with the decoder-instance count additionally capped
+/// by `max_decoders` — the anonymous-memory budget from maxDecodersForDims.
+/// Verdict is identical for any cap ≥ 1; only the fan-out width changes.
+pub fn validateFramesParallelBudget(
+    allocator: std.mem.Allocator,
+    codec: VpxCodec,
+    frames: []const []const u8,
+    max_decoders: usize,
 ) VpxDecodeResult {
     if (frames.len == 0) return VpxDecodeResult.invalid("No frames to decode", 0, 0);
 
@@ -281,7 +320,12 @@ pub fn validateFramesParallel(
 
     const cpu = std.Thread.getCpuCount() catch 1;
     // Bound by segment count and a memory ceiling (each decoder allocs frame buffers).
-    const n_threads = @min(@min(cpu, num_segs), 64);
+    const n_threads = @min(@min(@min(cpu, num_segs), 64), @max(max_decoders, 1));
+    // When the memory budget caps instances below the core count, spend the
+    // idle cores INSIDE each instance via libvpx row-mt threading (worker
+    // state is small next to a reference-frame pool). Capped at 4: VP9 row-mt
+    // scaling flattens beyond that at common resolutions.
+    const internal_threads: u32 = @intCast(@min(@max(cpu / n_threads, 1), 4));
 
     const results = allocator.alloc(VpxDecodeResult, num_segs) catch return validateFrames(codec, frames);
     defer allocator.free(results);
@@ -292,6 +336,7 @@ pub fn validateFramesParallel(
         .bounds = bounds.items,
         .next = std.atomic.Value(usize).init(0),
         .results = results,
+        .internal_threads = internal_threads,
     };
 
     const threads = allocator.alloc(std.Thread, n_threads) catch return validateFrames(codec, frames);
@@ -317,6 +362,20 @@ pub fn validateFramesParallel(
 }
 
 // ============ Tests ============
+
+test "vpx decoder budget scales inversely with frame area and never hits zero" {
+    // 1080p: enough instances for real segment parallelism under the budget.
+    const at_1080p = maxDecodersForDims(1920, 1080);
+    try std.testing.expect(at_1080p >= 4 and at_1080p <= 16);
+    // Unknown dims assume 1080p (conservative middle ground).
+    try std.testing.expectEqual(at_1080p, maxDecodersForDims(0, 0));
+    // 8K: reference pools are huge; must still make progress with one decoder.
+    try std.testing.expect(maxDecodersForDims(7680, 4320) >= 1);
+    // Tiny video: budget is generous (downstream still caps at cpu/segments/64).
+    try std.testing.expect(maxDecodersForDims(320, 240) >= 16);
+    // Hostile dims from a corrupt track header must not overflow or zero out.
+    try std.testing.expect(maxDecodersForDims(std.math.maxInt(u64), std.math.maxInt(u64)) >= 1);
+}
 
 test "libvpx rejects empty frame set" {
     const empty: []const []const u8 = &.{};

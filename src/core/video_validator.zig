@@ -890,6 +890,47 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
         }
     }
 
+    // VP8/VP9 on mapped sources: decode from zero-copy frame refs into the
+    // mmap'd/in-memory file instead of duplicating every compressed frame into
+    // anonymous memory. The copying collector held ~the whole file resident,
+    // which OOMed the streaming ceiling gate (2GiB WebM vs 512MiB cgroup,
+    // tests/cli/streaming_ceiling); with refs the file pages stay clean and
+    // evictable and anonymous memory is bounded by the decoder budget.
+    // Every frame is still fully decoded via libvpx — identical verdict.
+    if ((video_codec == .vp8 or video_codec == .vp9) and source.isMapped()) {
+        const frame_refs = parser.collectAllFrameRefs(video_track.track_number, max_frames) orelse {
+            return VideoValidationResult.invalid("No frames found", video_codec);
+        };
+        defer allocator.free(frame_refs);
+
+        const vpx_codec: vpx_decode.VpxCodec = switch (video_codec) {
+            .vp8 => .vp8,
+            .vp9 => .vp9,
+            else => unreachable,
+        };
+        const max_decoders = vpx_decode.maxDecodersForDims(video_track.pixel_width, video_track.pixel_height);
+        const result = vpx_decode.validateFramesParallelBudget(allocator, vpx_codec, frame_refs, max_decoders);
+        if (!result.valid) {
+            return VideoValidationResult.invalid(
+                result.error_message orelse "libvpx decode failed",
+                video_codec,
+            );
+        }
+        if (result.frames_decoded == 0) {
+            return VideoValidationResult.invalid(
+                "No VP8/VP9 frames decoded",
+                video_codec,
+            );
+        }
+        return .{
+            .valid = true,
+            .error_message = null,
+            .codec = video_codec,
+            .frames_decoded = result.frames_decoded,
+            .byte_validated = true, // Every frame fully decoded via libvpx
+        };
+    }
+
     // Collect ALL frames for full decode validation - no limit
     // A bit error in any frame (not just keyframes) should be detected
     const all_frames = parser.collectAllFrames(video_track.track_number, max_frames) orelse {
@@ -1008,7 +1049,8 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
         };
     }
 
-    // For VP8/VP9, run every frame through libvpx for full bitstream
+    // For VP8/VP9 on NON-mapped sources (mapped ones took the zero-copy
+    // branch above), run every frame through libvpx for full bitstream
     // validation (entropy decode + IDCT + motion compensation + loop filter).
     // libvpx surfaces bit flips in DCT coefficient regions as
     // VPX_CODEC_CORRUPT_FRAME / VPX_CODEC_UNSUP_BITSTREAM, so
