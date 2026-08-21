@@ -125,6 +125,8 @@ format_accepted_for_slot() {
 		ole2) [ "$detected" = ppt ] && return 0 ;;
 		opus) [ "$detected" = mkv ] && return 0 ;;
 		prores) [ "$detected" = mov ] && return 0 ;;
+		# WebM is Matroska by definition; validate reports the container as mkv.
+		webm) [ "$detected" = mkv ] && return 0 ;;
 		odp | ods | odt) [ "$detected" = epub ] && return 0 ;;
 		# RAW-on-TIFF base: validate validates these through the TIFF path today;
 		# dedicated RAW detection is moving to rawz. Acceptable until it ships.
