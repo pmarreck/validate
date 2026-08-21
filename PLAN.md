@@ -14,12 +14,91 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
-- [ ] **Give validate_gui a current validate commit to pin (Peter,
+- [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
+      decision note, 2026-08-21, URGENT):** free 15-participant Mecha
+      Validate Founding Beta launches 2026-09-01; a named freeze commit +
+      its versioned capability matrix define every honest v1 claim. Freeze
+      recommendation **2026-08-27 17:00 EDT — awaiting Peter approval**
+      (the one Peter-only decision). "As much as technically possible" =
+      broadest set passing release controls at freeze; every gap ships
+      marked partial/structural-only/unsupported, never a slipped date
+      (candor ruling 2026-08-19). Paddle/payment out of scope (beta free;
+      $49.99 applies to later paid release). Launch-critical order:
+      1. A/V streaming conversions (ogg family, vp9_webm agents resumed
+         2026-08-21 14:10 EDT; h265_mp4 LANDED bc065a5c8; mkv_cc owed after
+         vp9) — resident rows ship honestly if not converted by freeze.
+      2. Admission refuse-guard (batchscale agent resumed; OOM2 rule:
+         single file estimate > total budget -> REFUSED indeterminate/
+         resource_cap, never unbounded admission) + parallel enumeration.
+      3. LERC link closure (blocked on tiffz lercz artifact export —
+         dependency note sent 2026-08-21; then consumer regression +
+         re-pin + all_c_deps).
+      4. Freeze-week: regenerate capability matrix at freeze commit, full
+         sweep evidence refresh, Peter wording review of the matrix (his
+         ruling #6), validate_gui field acceptance re-run (98k-file
+         Downloads scan), five-target CI green at the freeze SHA.
+      Einstein replied-to with critical path + pins (see
+      ~/Code/inbox/2026-08-21-from-validate-beta-critical-path...). NOT
+      launch-critical, deferred: pdfz phase 2 (#33), --capabilities
+      emitter, corrupt-mutant adjudication backlog.
+
+- [x] **Spot-check six multi-gigabyte ZIP compressed-size mismatch INVALIDs
+      (Peter, 2026-08-20):** inspect local headers, central-directory records,
+      ZIP64 extras, and data descriptors for the three Rick and Morty archives,
+      Venom, The Batman, and Assassin's Creed Syndicate; compare current
+      Validate with independent archive readers. Diagnose only unless Peter
+      asks for a fix. Result: all six are stale-backend false positives. Every
+      archive uses legal ZIP64 central-directory `0xFFFFFFFF` sentinels whose
+      `0x0001` extras carry the resolved 64-bit sizes; `zipdetails` found zero
+      compressed-size mismatches after resolution. Current Validate
+      `c104bc0b3` fully CRC-validated all six, and independent `unzip -tq`
+      passed all six, including the 22 GB archive. Commit `1aaddf082` fixed
+      this exact raw-sentinel comparison and is in the GUI's new pin.
+      Completed 2026-08-20 15:20 EDT. Curiosity poke: streaming writers may
+      place zero or sentinel sizes in local headers and put the authoritative
+      sizes in data descriptors or ZIP64 records, so direct local/central
+      equality is not a valid invariant in every general-purpose-bit-flag mode.
+
+- [x] **Spot-check five GUI ZIP extra-field WARNs (Peter, 2026-08-20):**
+      inspect local/central extra-field records for ColorOracleJar, Darktide Mod
+      Loader, Easiest Piston Lock, and the two DOCX files; compare independent
+      archive readers and current Validate; confirm the exact Validate revision
+      loaded by validate_gui. Diagnose only unless Peter asks for a fix.
+      Result: all five WARNs are false positives from the old backend. Raw
+      header walks found zero malformed chains; the differences are standard
+      Info-ZIP Unix metadata, central-only NTFS timestamps, and local-only OOXML
+      growth hints. Current CLI `c104bc0b3` and three independent readers accept
+      every file. validate_gui pinned `c104bc0b3`; its local `f0dee6c21` fix
+      links lercz and produces a fresh backend that returns `valid=T` with an
+      empty warning for all five files. The active Downloads scan remains on
+      the old dev server until it finishes, after which the GUI can replace it.
+      Completed 2026-08-20 12:03 EDT; fresh-backend confirmation received
+      2026-08-20 12:50 EDT.
+      Curiosity poke: aggregate local/central lengths may legally differ, while
+      a malformed record or conflicting same-ID payload can still justify WARN.
+
+- [x] **Give validate_gui a current validate commit to pin (Peter,
       2026-08-19):** after the active h265 conversion is green, landed, and
       pushed, send validate_gui the exact `yolo` commit via LLMsend and state
       that its ancestry includes the encrypted-PDF fix. Curiosity poke:
       sending an unpushed SHA would leave the consumer unable to fetch it, so
-      verify remote reachability before the handoff.
+      verify remote reachability before the handoff. Result: GUI lockfile now
+      pins pushed Validate `c104bc0b3`; its local `f0dee6c21` server build and
+      integration tests are green. Live replacement waits for the running
+      Downloads scan. Completed 2026-08-20 12:50 EDT.
+
+- [ ] **Make Validate's installed core archive own its LERC link closure
+      (Einstein handoff, 2026-08-20):** wait for tiffz to export its existing
+      lercz artifact under a stable public name, then first add a consumer
+      regression that reproduces the unresolved `lerc_getBlobInfo` /
+      `lerc_decode` link. Re-pin tiffz, add the artifact to `all_c_deps`, and
+      prove a valid LERC-in-TIFF FFI call links and runs using only the
+      installed `libvalidate_core` consumer contract. Audit unresolved symbols
+      and run the full test/build_all/Nix/CI gates before giving validate_gui
+      the exact pushed SHA so it can remove its temporary direct lercz pin.
+      Blocked on tiffz's pushed green export commit. Curiosity poke: an `nm`
+      audit can look clean while the installed consumer contract still omits a
+      transitive archive, so acceptance requires a real external link and call.
 
 - [x] **Spot-check `ACES - Extra Slots-44902.zip` WARN validity (Peter,
       2026-08-19):** inspect the local and central ZIP headers plus an
