@@ -1749,6 +1749,84 @@ fn validateBatch(
     return 0; // VALIDATE_OK
 }
 
+// ========== Parallel Directory Enumeration ==========
+
+/// C emit callback: return nonzero to stop the walk (e.g. max-files reached).
+pub const EnumerateEmitCallback = ?*const fn (ctx: ?*anyopaque, path: [*:0]const u8, size: u64) callconv(.c) c_int;
+/// reason mirrors core.dir_walker.WarnReason; detail is a Zig error name or "".
+pub const EnumerateWarnCallback = ?*const fn (ctx: ?*anyopaque, reason: c_int, path: [*:0]const u8, detail: [*:0]const u8) callconv(.c) void;
+/// Return nonzero to emit the directory as a single unit (bundle/BagIt).
+pub const EnumerateClassifyCallback = ?*const fn (ctx: ?*anyopaque, path: [*:0]const u8) callconv(.c) c_int;
+
+/// Enumerate a directory tree in parallel (shared work-stealing frontier;
+/// see core.dir_walker). Callbacks bridge to C; emit/warn are serialized by
+/// the walker so the C side needs no locking.
+/// Bridges core.dir_walker's Zig callbacks to the C fn pointers. The walker
+/// serializes emit/warn, so the bridge adds no locking of its own.
+const EnumerateBridge = struct {
+    emit: *const fn (ctx: ?*anyopaque, path: [*:0]const u8, size: u64) callconv(.c) c_int,
+    warn: EnumerateWarnCallback,
+    classify: EnumerateClassifyCallback,
+    user_ctx: ?*anyopaque,
+
+    fn emitCb(ctx: ?*anyopaque, path: [:0]const u8, size: u64) bool {
+        const self: *EnumerateBridge = @ptrCast(@alignCast(ctx.?));
+        return self.emit(self.user_ctx, path.ptr, size) == 0;
+    }
+
+    fn warnCb(ctx: ?*anyopaque, reason: core.dir_walker.WarnReason, path: [:0]const u8, detail: []const u8) void {
+        const self: *EnumerateBridge = @ptrCast(@alignCast(ctx.?));
+        const warn_fn = self.warn orelse return;
+        // Zig error names are short; NUL-terminate into a fixed buffer for C.
+        var detail_buf: [64]u8 = undefined;
+        const n = @min(detail.len, detail_buf.len - 1);
+        @memcpy(detail_buf[0..n], detail[0..n]);
+        detail_buf[n] = 0;
+        warn_fn(self.user_ctx, @intFromEnum(reason), path.ptr, detail_buf[0..n :0].ptr);
+    }
+
+    fn classifyCb(ctx: ?*anyopaque, path: [:0]const u8) core.dir_walker.DirClass {
+        const self: *EnumerateBridge = @ptrCast(@alignCast(ctx.?));
+        const classify_fn = self.classify orelse return .recurse;
+        return if (classify_fn(self.user_ctx, path.ptr) != 0) .emit_as_unit else .recurse;
+    }
+};
+
+export fn validate_enumerate_directory(
+    root: ?[*:0]const u8,
+    num_threads: c_int,
+    emit: EnumerateEmitCallback,
+    warn: EnumerateWarnCallback,
+    classify: EnumerateClassifyCallback,
+    ctx: ?*anyopaque,
+) c_int {
+    const root_ptr = root orelse {
+        errors.setLastError(.validation_invalid_path, "NULL enumeration root", .{});
+        return 1; // VALIDATE_ERR_NULL_PATH
+    };
+    const emit_fn = emit orelse {
+        errors.setLastError(.internal_unexpected, "NULL enumeration callback", .{});
+        return 2; // VALIDATE_ERR_NULL_CALLBACK
+    };
+
+    var bridge = EnumerateBridge{
+        .emit = emit_fn,
+        .warn = warn,
+        .classify = classify,
+        .user_ctx = ctx,
+    };
+    const thread_count: usize = if (num_threads > 0) @intCast(num_threads) else 0;
+    _ = core.dir_walker.walk(std.heap.page_allocator, std.mem.span(root_ptr), .{
+        .thread_count = thread_count,
+    }, .{
+        .ctx = @ptrCast(&bridge),
+        .emit = EnumerateBridge.emitCb,
+        .warn = if (warn != null) EnumerateBridge.warnCb else null,
+        .classify_dir = if (classify != null) EnumerateBridge.classifyCb else null,
+    });
+    return 0; // VALIDATE_OK
+}
+
 // ========== Utility Functions ==========
 
 /// Get description for a malformation bit (i18n-aware).
@@ -2485,6 +2563,79 @@ test "wedge-class file is admitted serialized with one stderr note, not refused"
     const note = Capture.note_buf[0..Capture.note_len.load(.seq_cst)];
     try std.testing.expect(std.mem.indexOf(u8, note, wedge) != null);
     try std.testing.expect(std.mem.indexOf(u8, note, "alone") != null);
+}
+
+test "validate_enumerate_directory walks a tree through the C ABI" {
+    const Collector = struct {
+        var emit_count: std.atomic.Value(usize) = .init(0);
+        var warn_count: std.atomic.Value(usize) = .init(0);
+        var saw_hidden: std.atomic.Value(bool) = .init(false);
+        var saw_bundle: std.atomic.Value(bool) = .init(false);
+        var sizes_sum: std.atomic.Value(u64) = .init(0);
+
+        fn emit(_: ?*anyopaque, path: [*:0]const u8, size: u64) callconv(.c) c_int {
+            const s = std.mem.span(path);
+            _ = emit_count.fetchAdd(1, .seq_cst);
+            if (std.mem.indexOf(u8, s, "hidden.dat") != null) saw_hidden.store(true, .seq_cst);
+            if (std.mem.endsWith(u8, s, "x.bundle")) saw_bundle.store(true, .seq_cst);
+            if (std.mem.endsWith(u8, s, ".dat")) _ = sizes_sum.fetchAdd(size, .seq_cst);
+            return 0;
+        }
+
+        fn warn(_: ?*anyopaque, _: c_int, _: [*:0]const u8, _: [*:0]const u8) callconv(.c) void {
+            _ = warn_count.fetchAdd(1, .seq_cst);
+        }
+
+        fn classify(_: ?*anyopaque, path: [*:0]const u8) callconv(.c) c_int {
+            return @intFromBool(std.mem.endsWith(u8, std.mem.span(path), ".bundle"));
+        }
+    };
+    Collector.emit_count.store(0, .seq_cst);
+    Collector.warn_count.store(0, .seq_cst);
+    Collector.saw_hidden.store(false, .seq_cst);
+    Collector.saw_bundle.store(false, .seq_cst);
+    Collector.sizes_sum.store(0, .seq_cst);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(runtime.io(), "sub");
+    try tmp.dir.createDirPath(runtime.io(), "x.bundle");
+    {
+        const f = try tmp.dir.createFile(runtime.io(), "a.dat", .{});
+        try f.writeStreamingAll(runtime.io(), &[_]u8{1} ** 3);
+        f.close(runtime.io());
+    }
+    {
+        const sub = try tmp.dir.openDir(runtime.io(), "sub", .{});
+        defer sub.close(runtime.io());
+        const f = try sub.createFile(runtime.io(), "b.dat", .{});
+        try f.writeStreamingAll(runtime.io(), &[_]u8{2} ** 5);
+        f.close(runtime.io());
+    }
+    {
+        const bundle = try tmp.dir.openDir(runtime.io(), "x.bundle", .{});
+        defer bundle.close(runtime.io());
+        const f = try bundle.createFile(runtime.io(), "hidden.dat", .{});
+        f.close(runtime.io());
+    }
+    const root = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "");
+    defer std.testing.allocator.free(root);
+    const root_z = try std.testing.allocator.dupeZ(u8, root);
+    defer std.testing.allocator.free(root_z);
+
+    const status = validate_enumerate_directory(root_z.ptr, 3, Collector.emit, Collector.warn, Collector.classify, null);
+
+    try std.testing.expectEqual(@as(c_int, 0), status);
+    // a.dat + sub/b.dat + x.bundle (as a unit) = 3 emissions; hidden.dat never.
+    try std.testing.expectEqual(@as(usize, 3), Collector.emit_count.load(.seq_cst));
+    try std.testing.expect(Collector.saw_bundle.load(.seq_cst));
+    try std.testing.expect(!Collector.saw_hidden.load(.seq_cst));
+    try std.testing.expectEqual(@as(u64, 8), Collector.sizes_sum.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), Collector.warn_count.load(.seq_cst));
+
+    // NULL contract: missing root or emit is a caller error, not a crash.
+    try std.testing.expect(validate_enumerate_directory(null, 1, Collector.emit, null, null, null) != 0);
+    try std.testing.expect(validate_enumerate_directory(root_z.ptr, 1, null, null, null, null) != 0);
 }
 
 test "batch completion executor bounds callback I/O and delivers every result" {

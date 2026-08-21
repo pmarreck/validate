@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <time.h>
 #include <math.h>
 #include <stdarg.h>
@@ -19,8 +18,6 @@
 #define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
-#define PATH_SEP '\\'
-#define IS_PATH_SEP(c) ((c) == '/' || (c) == '\\')
 #else
 #include <unistd.h>
 #include <signal.h>
@@ -31,8 +28,6 @@
 #include <malloc.h>
 #define VALIDATE_HAVE_MALLINFO2 1
 #endif
-#define PATH_SEP '/'
-#define IS_PATH_SEP(c) ((c) == '/')
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -713,9 +708,11 @@ static int path_list_add(path_list_t* list, const char* path, size_t file_size) 
 	return 0;
 }
 
-/* Recursive directory enumeration */
+/* Directory enumeration now runs in the library (validate_enumerate_directory,
+ * parallel work-stealing frontier). The cap below is the walker's built-in
+ * default (core dir_walker Options.max_depth = 256); it is quoted in the
+ * max-depth warning so the message keeps reporting the real limit. */
 #define MAX_ENUM_DEPTH 256 /* directory-recursion cap: DoS guard against deep/cyclic trees */
-static int enumerate_directory(const char* dir_path, path_list_t* list, int depth);
 
 /* Helper to check if path ends with a suffix */
 static int ends_with(const char* path, size_t len, const char* suffix) {
@@ -769,115 +766,39 @@ static int is_bagit_directory(const char* path) {
 	return result;
 }
 
-static int enumerate_path(const char* path, path_list_t* list, int depth) {
-	struct stat st;
-	/* lstat, not stat: do NOT follow symlinks during recursion. A symlink to an
-	 * ancestor directory would otherwise be followed back into the tree and
-	 * recurse forever (C stack overflow). Symlinks become S_ISLNK below and are
-	 * skipped. Top-level path args are still stat()'d by the caller.
-	 * Windows (MinGW) has no lstat(); Windows symlinks/reparse points are rare
-	 * and handled differently by the OS, and the MAX_ENUM_DEPTH cap below still
-	 * bounds any cycle — so fall back to stat() there. */
-#if defined(_WIN32)
-	if (stat(path, &st) != 0) {
-#else
-	if (lstat(path, &st) != 0) {
-#endif
-		/* Skip inaccessible files (broken symlinks, permission denied, etc.)
-		 * rather than failing the entire enumeration */
-		return 0;
-	}
+/* ---- validate_enumerate_directory() callbacks -------------------------------
+ * The library's parallel walker SERIALIZES emit/warn callbacks, so these touch
+ * path_list_t and stderr without any locking. classify may run concurrently
+ * from any worker but only performs pure suffix checks and a stat. */
 
-	if (S_ISREG(st.st_mode)) {
-		return path_list_add(list, path, (size_t)st.st_size);
-	} else if (S_ISDIR(st.st_mode)) {
-		/* Check if this is a bundle directory (e.g., .git) */
-		if (is_bundle_directory(path)) {
-			/* Add bundle directory as a single validation item - don't recurse */
-			return path_list_add(list, path, (size_t)st.st_size);
-		}
-		/* Check if this is a BagIt bag (contains bagit.txt) */
-		if (is_bagit_directory(path)) {
-			return path_list_add(list, path, (size_t)st.st_size);
-		}
-		return enumerate_directory(path, list, depth + 1);
+/* Append one discovered unit; stop the walk once max_files is reached (the
+ * library drains promptly and path_list_add drops any in-flight extras). */
+static int enum_emit_cb(void* ctx, const char* path, uint64_t size) {
+	path_list_t* list = (path_list_t*)ctx;
+	if (path_list_add(list, path, (size_t)size) != 0) {
+		return 1; /* OOM: stop enumeration, validate what we have */
 	}
-#if !defined(_WIN32)
-	else if (S_ISLNK(st.st_mode)) {
-		/* Symlinks are never FOLLOWED during enumeration (loop/escape safety —
-		 * see the lstat comment above). But a DANGLING symlink deserves a WARN
-		 * row, not a silent skip: hand it to validation, which classifies it
-		 * as broken_symlink. A working symlink stays skipped (its target is
-		 * enumerated on its own if it lives in the scanned tree). */
-		struct stat tst;
-		if (stat(path, &tst) != 0 && (errno == ENOENT || errno == ENOTDIR)) {
-			return path_list_add(list, path, 0);
-		}
-		return 0;
+	if (list->max_files > 0 && list->count >= list->max_files) {
+		return 1;
 	}
-#endif
-	/* Skip other types (devices, sockets, working symlinks, etc.) */
 	return 0;
 }
 
-static int enumerate_directory(const char* dir_path, path_list_t* list, int depth) {
-	/* Recursion-depth cap: defense-in-depth against pathologically deep trees and
-	 * any residual directory cycle (e.g. hardlinked dirs) that lstat can't catch. */
-	if (depth > MAX_ENUM_DEPTH) {
+static void enum_warn_cb(void* ctx, int reason, const char* path, const char* detail) {
+	(void)ctx;
+	if (reason == VALIDATE_ENUM_WARN_MAX_DEPTH) {
 		fprintf(stderr, "\033[1;33mWARN\033[0m Skipping directory past max depth %d: %s\n",
-		        MAX_ENUM_DEPTH, dir_path);
-		return 0;
-	}
-	DIR* dir = opendir(dir_path);
-	if (!dir) {
-		/* Skip inaccessible directories (permission denied, etc.)
-		 * rather than failing the entire enumeration. */
-		int saved_errno = errno;
+		        MAX_ENUM_DEPTH, path);
+	} else {
 		fprintf(stderr, "\033[1;33mWARN\033[0m Skipping inaccessible directory: %s (%s)\n",
-		        dir_path, strerror(saved_errno));
-		return 0;
+		        path, detail);
 	}
+}
 
-	struct dirent* entry;
-	while ((entry = readdir(dir)) != NULL) {
-		/* Skip . and .. */
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-			continue;
-		}
-
-		/* Check max_files limit */
-		if (list->max_files > 0 && list->count >= list->max_files) {
-			break;
-		}
-
-		/* Build full path (handle trailing separator in dir_path) */
-		size_t dir_len = strlen(dir_path);
-		size_t name_len = strlen(entry->d_name);
-		int needs_sep = (dir_len > 0 && !IS_PATH_SEP(dir_path[dir_len - 1])) ? 1 : 0;
-		size_t path_len = dir_len + needs_sep + name_len;
-		char* full_path = (char*)malloc(path_len + 1);
-		if (!full_path) {
-			closedir(dir);
-			return -1;
-		}
-
-		memcpy(full_path, dir_path, dir_len);
-		if (needs_sep) {
-			full_path[dir_len] = PATH_SEP;
-		}
-		memcpy(full_path + dir_len + needs_sep, entry->d_name, name_len + 1);
-
-		int rc = enumerate_path(full_path, list, depth + 1);
-		free(full_path);
-
-		if (rc != 0) {
-			closedir(dir);
-			return rc;
-		}
-	}
-
-	closedir(dir);
-	return 0;
+/* Bundles (.git, .app, ...) and BagIt bags validate as one unit: don't recurse. */
+static int enum_classify_cb(void* ctx, const char* path) {
+	(void)ctx;
+	return (is_bundle_directory(path) || is_bagit_directory(path)) ? 1 : 0;
 }
 
 /* Color support - these get set to empty strings if colors are disabled */
@@ -3380,7 +3301,10 @@ int main(int argc, char* argv[]) {
 			if (is_bundle_directory(paths[i]) || is_bagit_directory(paths[i])) {
 				path_list_add(&file_list, paths[i], (size_t)st.st_size);
 			} else {
-				enumerate_directory(paths[i], &file_list, 0);
+				/* Parallel work-stealing enumeration in the library; callbacks
+				 * are serialized, so file_list needs no locking. */
+				validate_enumerate_directory(paths[i], (int)jobs,
+					enum_emit_cb, enum_warn_cb, enum_classify_cb, &file_list);
 			}
 		} else if (S_ISREG(st.st_mode)) {
 			path_list_add(&file_list, paths[i], (size_t)st.st_size);

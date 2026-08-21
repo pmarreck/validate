@@ -569,6 +569,64 @@ validate_error_t validate_batch_sized(
     void* ctx
 );
 
+/* ========== Parallel Directory Enumeration ========== */
+
+/**
+ * Emit callback for validate_enumerate_directory(). Called once per
+ * discovered validation unit (regular file, dangling symlink with size 0,
+ * or a directory the classify callback marked as a single unit).
+ * SERIALIZED by the library — no caller-side locking needed. The path
+ * pointer is only valid during the call (copy it if you keep it).
+ *
+ * @return 0 to continue, non-zero to stop the walk early (e.g. max files).
+ */
+typedef int (*validate_enum_emit_t)(void* ctx, const char* path, uint64_t size);
+
+/** Warning reasons passed to validate_enum_warn_t. */
+typedef enum {
+    VALIDATE_ENUM_WARN_MAX_DEPTH = 0,    /* directory deeper than the recursion cap */
+    VALIDATE_ENUM_WARN_INACCESSIBLE = 1  /* directory could not be opened */
+} validate_enum_warn_reason_t;
+
+/**
+ * Warning callback: a directory was skipped, never fatally. SERIALIZED with
+ * the emit callback. `detail` is a short error name ("" when not applicable).
+ */
+typedef void (*validate_enum_warn_t)(void* ctx, int reason, const char* path, const char* detail);
+
+/**
+ * Directory classification callback. May be called CONCURRENTLY from any
+ * enumeration worker; must be thread-safe (pure checks and stat are fine).
+ *
+ * @return non-zero to emit the directory as one validation unit
+ *         (bundle/BagIt), 0 to recurse into it.
+ */
+typedef int (*validate_enum_classify_t)(void* ctx, const char* path);
+
+/**
+ * Enumerate a directory tree in parallel with a shared work-stealing
+ * frontier (workers pop a directory, emit its entries, push subdirectories;
+ * idle workers steal). Blocks until the walk completes or emit stops it.
+ * Symlinks are never followed; dangling ones are emitted with size 0.
+ * Emission order is completion order — NOT deterministic across runs.
+ *
+ * @param root Directory to enumerate (caller has already decided to recurse)
+ * @param num_threads Worker count (<= 0 = auto)
+ * @param emit Required per-unit callback (serialized)
+ * @param warn Optional skip-warning callback (serialized), or NULL
+ * @param classify Optional bundle classifier (thread-safe), or NULL = always recurse
+ * @param ctx User context passed to every callback
+ * @return VALIDATE_OK, or VALIDATE_ERR_NULL_PATH / VALIDATE_ERR_NULL_CALLBACK
+ */
+validate_error_t validate_enumerate_directory(
+    const char* root,
+    int num_threads,
+    validate_enum_emit_t emit,
+    validate_enum_warn_t warn,
+    validate_enum_classify_t classify,
+    void* ctx
+);
+
 /* ========== Interrupt Control ========== */
 
 /**
