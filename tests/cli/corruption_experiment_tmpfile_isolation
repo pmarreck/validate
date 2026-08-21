@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Two corruption-experiment instances must NEVER share a trial tmpfile.
+# A fixed name ($TMPDIR/corruption_trial.<ext>) cross-contaminates concurrent
+# sweeps: witnessed 2026-08-19 when a format_roundtrip-embedded experiment
+# overwrote a family sweep's mutant mid-trial, recording a phantom detection
+# miss (theora_ogv shotgun trial 16 — the mutant itself was 300/300 detected
+# when rerun solo). The isolation contract: each instance's trial paths are
+# disjoint from every other instance's (PID-namespaced), so no interleaving
+# of two experiments can make one validate the other's bytes.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-corruption-isolation.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+fixture_a="$work/fixture_a.bin"
+fixture_b="$work/fixture_b.bin"
+head -c 8192 /dev/zero > "$fixture_a"
+cp "$fixture_a" "$fixture_b"
+
+# Recorder validator: append the path each trial validates to $SEEN_FILE.
+recorder="$work/recorder"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "$1" >> "$SEEN_FILE"' 'exit 1' > "$recorder"
+chmod +x "$recorder"
+
+SEEN_FILE="$work/seen_a" VALIDATE_BIN="$recorder" TMPDIR="$work" \
+	"$PROJECT_DIR/scripts/corruption-experiment" sniper "$fixture_a" \
+	--count 3 --seed 1 --no-stop --output "$work/a.tsv" >/dev/null 2>&1 || {
+	echo "FAIL: instance A did not run" >&2
+	exit 1
+}
+SEEN_FILE="$work/seen_b" VALIDATE_BIN="$recorder" TMPDIR="$work" \
+	"$PROJECT_DIR/scripts/corruption-experiment" sniper "$fixture_b" \
+	--count 3 --seed 2 --no-stop --output "$work/b.tsv" >/dev/null 2>&1 || {
+	echo "FAIL: instance B did not run" >&2
+	exit 1
+}
+
+[ -s "$work/seen_a" ] || { echo "FAIL: instance A recorded no trial paths" >&2; exit 1; }
+[ -s "$work/seen_b" ] || { echo "FAIL: instance B recorded no trial paths" >&2; exit 1; }
+
+sort -u "$work/seen_a" > "$work/uniq_a"
+sort -u "$work/seen_b" > "$work/uniq_b"
+overlap="$(comm -12 "$work/uniq_a" "$work/uniq_b")"
+if [ -n "$overlap" ]; then
+	echo "FAIL: experiment instances shared trial tmpfile(s) — concurrent sweeps cross-contaminate:" >&2
+	printf '%s\n' "$overlap" >&2
+	exit 1
+fi
+
+echo "PASS: corruption-experiment instances use disjoint trial tmpfiles"

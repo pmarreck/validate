@@ -311,6 +311,9 @@ local function main()
 	ffi.cdef("int getpid(void);")
 	local ext = opts.file:match("%.([^.]+)$") or "bin"
 	local tmpdir = os.getenv("TMPDIR") or "/tmp"
+	-- PID-namespaced so concurrent experiment instances can never validate
+	-- each other's trial bytes (a fixed name cross-contaminated overlapping
+	-- sweeps: phantom miss witnessed 2026-08-19).
 	local tmpfile = string.format("%s/corruption_trial.%d.%s", tmpdir, tonumber(ffi.C.getpid()), ext)
 
 	-- TSV output
