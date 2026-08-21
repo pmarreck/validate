@@ -1522,6 +1522,31 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     const heap_task_slot = heapDebugTaskBegin(task.index, id, path_ptr, format_hint, file_size, reserved_bytes);
     defer heapDebugTaskEnd(heap_task_slot);
 
+    // REFUSE-GUARD (field OOM #2, 2026-08-19): a file whose worst-case
+    // residency estimate exceeds the WHOLE budget is never validated —
+    // admission cannot bound a decode once it starts (witnessed: 87 GB HEVC
+    // MKV admitted "alone" slurped ~13 GB/min anonymous to a 90.2 G cgroup
+    // kill). Honest WARN+indeterminate verdict per the resource-cap tier
+    // (0b5dc16bb); the file is never opened. Streaming-proven families never
+    // trip this (their estimates are residency-capped, not size-scaled).
+    const budget_total = validate_get_max_memory();
+    if (core.admission_estimate.isWedge(@intCast(reserved_bytes), @intCast(budget_total))) {
+        var warn_buf: [256]u8 = undefined;
+        const warning = core.admission_estimate.formatRefusalWarning(
+            &warn_buf,
+            @intCast(reserved_bytes),
+            @intCast(budget_total),
+        );
+        var refusal = format_validation.ValidationResult.okWithDepthAndWarning(
+            format_validation.detectFormatFromExtension(path_slice),
+            .structural,
+            warning,
+        );
+        refusal.verdict = .indeterminate;
+        const refusal_str = ctx.delivery.buildResult(refusal, 0) orelse return .{};
+        return .{ .id = id, .path = path_ptr, .result = refusal_str };
+    }
+
     // Large-file semaphore: files above threshold block until a slot is free,
     // preventing N workers all simultaneously validating huge files.
     const is_large = if (file_size_opt) |size| size > LARGE_FILE_THRESHOLD else false;
@@ -1682,9 +1707,13 @@ fn validateBatch(
 
     // Memory budget: gates worker dequeue. estimate_fn returns a per-format
     // multiple of stat/discovery size (core.admission_estimate: decode
-    // residency runs 1x-33x raw size), budget admits up to total bytes worth
-    // of work concurrently. Single file whose reserve exceeds the total
-    // budget gets admitted alone (starvation rule) with a stderr note.
+    // residency runs 1x-33x raw size; streaming-proven families are
+    // residency-capped), budget admits up to total bytes worth of work
+    // concurrently. A file whose reserve exceeds the TOTAL budget is REFUSED
+    // in executeBatchTask with a WARN+indeterminate verdict and one stderr
+    // note (refuse-guard; field OOM #2 2026-08-19) — never admitted
+    // unbounded. Files that fit the budget but not the current free share
+    // wait in ordinary acquire blocking.
     var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
 
     // Wedge notes are meaningful only while this budget is live.
@@ -2515,15 +2544,21 @@ test "admission estimates are per-format: JXL reserves 33x via stat and discover
     try std.testing.expectEqual(@as(usize, 33_000), estimateBatchTask(task, @ptrCast(&context)));
 }
 
-test "wedge-class file is admitted serialized with one stderr note, not refused" {
-    // A file whose reserve exceeds the TOTAL budget can never fit; the
-    // gate must run it alone (MemoryBudget oversized rule) and say so once,
-    // and the batch must still deliver every result (no refusal, no wedge).
+test "wedge-class file is REFUSED with an indeterminate verdict, one note, never admitted" {
+    // Field OOM #2 (2026-08-19, inbox/2026-08-19-attachments-oom2): an 87 GB
+    // HEVC MKV admitted under the old "single file > budget runs alone" rule
+    // slurped ~13 GB/min anonymous to a 90.2 G cgroup kill. The binding rule:
+    // estimate > TOTAL budget => refuse with an honest WARN+indeterminate
+    // verdict — never admit unbounded. The wedge path here does not exist on
+    // disk, so a failed_to_open result would prove validation was attempted;
+    // the refusal warn text proves it never was (mechanical evidence).
     const Capture = struct {
         var note_count: std.atomic.Value(usize) = .init(0);
         var note_len: std.atomic.Value(usize) = .init(0);
         var note_buf: [4096]u8 = undefined;
         var callback_count: std.atomic.Value(usize) = .init(0);
+        var wedge_result_len: std.atomic.Value(usize) = .init(0);
+        var wedge_result_buf: [4096]u8 = undefined;
 
         fn sink(note: []const u8) void {
             _ = note_count.fetchAdd(1, .seq_cst);
@@ -2532,13 +2567,20 @@ test "wedge-class file is admitted serialized with one stderr note, not refused"
             note_len.store(n, .seq_cst);
         }
 
-        fn callback(_: ?*anyopaque, _: u32, _: [*:0]const u8, result: [*:0]u8) callconv(.c) void {
-            validate_free(result);
+        fn callback(_: ?*anyopaque, id: u32, _: [*:0]const u8, result: [*:0]u8) callconv(.c) void {
+            defer validate_free(result);
+            if (id == 1) {
+                const s = std.mem.span(result);
+                const n = @min(s.len, wedge_result_buf.len);
+                @memcpy(wedge_result_buf[0..n], s[0..n]);
+                wedge_result_len.store(n, .seq_cst);
+            }
             _ = callback_count.fetchAdd(1, .seq_cst);
         }
     };
     Capture.note_count.store(0, .seq_cst);
     Capture.callback_count.store(0, .seq_cst);
+    Capture.wedge_result_len.store(0, .seq_cst);
 
     // 1 GiB budget; RSS of the test binary stays far below it, so the RSS
     // admission gate stays open and only the byte budget is under test.
@@ -2548,7 +2590,7 @@ test "wedge-class file is admitted serialized with one stderr note, not refused"
     g_wedge_note_sink = Capture.sink;
     defer g_wedge_note_sink = old_sink;
 
-    const wedge: [:0]const u8 = "/validate-test-wedge-class-file";
+    const wedge: [:0]const u8 = "/validate-test-wedge-class-file.bin";
     const small: [:0]const u8 = "/validate-test-wedge-peer";
     var paths = [_]?[*:0]const u8{ wedge.ptr, small.ptr, small.ptr };
     var ids = [_]u32{ 1, 2, 3 };
@@ -2562,7 +2604,16 @@ test "wedge-class file is admitted serialized with one stderr note, not refused"
     try std.testing.expectEqual(@as(usize, 1), Capture.note_count.load(.seq_cst));
     const note = Capture.note_buf[0..Capture.note_len.load(.seq_cst)];
     try std.testing.expect(std.mem.indexOf(u8, note, wedge) != null);
-    try std.testing.expect(std.mem.indexOf(u8, note, "alone") != null);
+    try std.testing.expect(std.mem.indexOf(u8, note, "refus") != null);
+
+    // The refusal verdict: WARN+indeterminate per the resource-cap tier
+    // (0b5dc16bb) — valid=T with the refusal warning, and no evidence of an
+    // attempted open (which would read "failed to open" from a missing path).
+    const wedge_result = Capture.wedge_result_buf[0..Capture.wedge_result_len.load(.seq_cst)];
+    try std.testing.expect(wedge_result.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, wedge_result, "deep validation refused") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wedge_result, "valid\x1fT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wedge_result, "failed") == null);
 }
 
 test "validate_enumerate_directory walks a tree through the C ABI" {
