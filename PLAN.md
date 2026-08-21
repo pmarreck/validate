@@ -160,10 +160,21 @@ at the bottom. Older completed sections were rolled up — full history lives in
       2026-08-19 19:12 EDT. Curiosity poke: FFI task arenas make `free()` a
       no-op, so any new per-sample or growable scratch must use the reclaiming
       allocator or an equivalent bounded custody pattern.
-- [ ] **Batch-scale (#28, agent in flight):** >=2x admission multiplier (first
-      commit), decoded-size-aware admission + wedge-class isolation, parallel
-      work-stealing directory enumeration. Inputs: validate_gui RSS probes in
-      inbox/2026-08-15-attachments-rss-growth/.
+- [x] **Batch-scale (#28):** landed as four commits (integrated 2026-08-21):
+      >=2x admission multiplier on all three estimate paths; evidence-seeded
+      per-format estimates (.jxl 33x witnessed, .mkv/.webm 3x, streaming-
+      proven audio residency-capped at 64MiB); REFUSE-GUARD per field OOM #2
+      — estimate > TOTAL budget => WARN+indeterminate refusal before the
+      file is ever opened, never unbounded admission (87GB MKV now refuses
+      honestly); parallel work-stealing enumeration (src/core/dir_walker.zig,
+      shared frontier, ~2x marginal μs/file at 128k files, ±16% worker
+      balance on asymmetric trees, metamorphic thread-count-invariance +
+      op-counter linearity gates). Inputs: validate_gui RSS probes in
+      inbox/2026-08-15-attachments-rss-growth/, telemetry in
+      inbox/2026-08-19-attachments-oom2/. Completed 2026-08-21 15:47 EDT.
+      Curiosity poke: extension-keyed estimates cannot distinguish streaming
+      h265_mkv from resident mkv_cc — the mkv_cc conversion (in flight)
+      retires that pessimism; JXL header-dims sizing remains fenced off.
 - [ ] **pdfz extraction phase 1 (Peter 2026-08-19: NOW, PRIVATE repo):** agent
       scaffolding ~/Code/pdfz (local-only, no remote until coordinator review;
       GitHub repo created private afterwards). Phase 2 (validate re-pins pdfz,
