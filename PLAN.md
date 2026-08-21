@@ -63,12 +63,21 @@ at the bottom. Older completed sections were rolled up — full history lives in
       marked partial/structural-only/unsupported, never a slipped date
       (candor ruling 2026-08-19). Paddle/payment out of scope (beta free;
       $49.99 applies to later paid release). Launch-critical order:
-      1. A/V streaming conversions (ogg family, vp9_webm agents resumed
-         2026-08-21 14:10 EDT; h265_mp4 LANDED bc065a5c8; mkv_cc owed after
-         vp9) — resident rows ship honestly if not converted by freeze.
-      2. Admission refuse-guard (batchscale agent resumed; OOM2 rule:
-         single file estimate > total budget -> REFUSED indeterminate/
-         resource_cap, never unbounded admission) + parallel enumeration.
+      1. A/V streaming conversions — COMPLETE 2026-08-21: ogg family
+         (a66963ccb), vp9_webm (8dc936e4c), mkv_cc (6f59c878b, which also
+         closed the zlib-ContentCompression never-inflated honesty hole:
+         zlib-CC files had passed "fully validated" with frames_decoded==0,
+         4/150 sniper -> 56/150 strict superset). ZERO resident rows in the
+         streaming manifest; all 12 families witnessed MATCH under real
+         cgroup ceilings.
+      2. Admission refuse-guard + parallel enumeration — COMPLETE
+         2026-08-21 (926e45311 et al.): estimate > total budget -> REFUSED
+         indeterminate/resource_cap before open, never unbounded admission.
+         Follow-up (small, pre-freeze if cheap): .mkv/.webm 3x estimate
+         pessimism existed because mkv_cc was resident; with all Matroska
+         families now streaming, those extensions qualify for a residency
+         cap like audio — needs its own witnessed justification, not a
+         blind edit.
       3. LERC link closure (blocked on tiffz lercz artifact export —
          dependency note sent 2026-08-21; then consumer regression +
          re-pin + all_c_deps).
