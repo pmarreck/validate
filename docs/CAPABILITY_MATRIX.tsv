@@ -231,7 +231,7 @@ warc	archive	full	full	1/1	2/5	mixed	-	-	deep	-
 wasm	executable	full	structural	1/1	5/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 wav	audio	full	structural	1/1	0/5	mixed	-	wav:streams	partial	deep achievable but not witnessed on all fixtures
 wavpack	audio	full	full	2/2	5/5	mixed	-	-	deep	-
-webm	-	full	-	0/0	0/0	mixed	-	vp9_webm:resident	unwitnessed	no labeled-good fixture in corpus
+webm	-	full	-	0/0	0/0	mixed	-	vp9_webm:streams	unwitnessed	no labeled-good fixture in corpus
 webp	image	full	full	6/6	0/5	mixed	-	-	deep	-
 wim	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
 woff	font	full	full	2/2	5/5	transparent	-	-	deep	-
