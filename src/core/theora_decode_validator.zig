@@ -191,41 +191,110 @@ pub fn validateTheoraPackets(packets: []const []const u8) TheoraDecodeResult {
     return TheoraDecodeResult.ok(packets_decoded, frames_decoded);
 }
 
-/// Validate Theora from an OGG container. extractPackets() filters to
-/// the first logical bitstream, which for .ogv is the Theora stream.
+/// Validate Theora from an OGG container, streaming one packet at a time
+/// (PacketIter filters to the first logical bitstream, which for .ogv is
+/// the Theora stream). Anonymous memory stays O(largest packet) — the old
+/// extract-all-packets approach held ~the whole file resident.
+/// Improvement over the slice-based validateTheoraPackets flow: the first
+/// video packet (the one th_decode_headerin returns 0 on) is now actually
+/// fed through th_decode_packetin instead of being skipped.
 pub fn validateOggTheora(allocator: std.mem.Allocator, source: *FileSource) TheoraDecodeResult {
-    var packet_result = ogg_validator.extractPackets(allocator, source) catch |err| {
-        return TheoraDecodeResult.invalid(switch (err) {
-            error.TruncatedPageHeader => "Truncated OGG page header",
-            error.InvalidOggSignature => "Invalid OGG signature",
-            error.UnsupportedOggVersion => "Unsupported OGG version",
-            error.TruncatedSegmentTable => "Truncated OGG segment table",
-            error.TruncatedPageData => "Truncated OGG page data",
-            else => "Failed to extract OGG packets",
-        }, 0, 0);
+    var iter = ogg_validator.PacketIter.init(source) catch |err| {
+        return TheoraDecodeResult.invalid(ogg_validator.extractErrorMessage(err), 0, 0);
     };
-    defer packet_result.deinit(allocator);
+    defer iter.deinit(allocator);
 
-    // Verify the stream we got is in fact Theora (first packet magic).
-    if (packet_result.packets.len < 3) {
-        return TheoraDecodeResult.invalid("Not enough OGG packets for Theora", 0, 0);
-    }
-    const first = packet_result.packets[0].data;
-    if (first.len < 7 or first[0] != 0x80 or !std.mem.eql(u8, first[1..7], "theora")) {
-        return TheoraDecodeResult.invalid("First OGG packet is not Theora info header", 0, 0);
+    var info: theora_c.th_info = undefined;
+    theora_c.th_info_init(&info);
+    defer theora_c.th_info_clear(&info);
+
+    var tc: theora_c.th_comment = undefined;
+    theora_c.th_comment_init(&tc);
+    defer theora_c.th_comment_clear(&tc);
+
+    var setup: ?*theora_c.th_setup_info = null;
+    defer if (setup != null) theora_c.th_setup_free(setup);
+
+    // --- header phase: feed packets to th_decode_headerin until it reports
+    // the first video packet (ret == 0) or the stream ends.
+    var packet_no: c_long = 0;
+    var header_count: u32 = 0;
+    // Borrowed from the iterator; valid until the next iter.next() call —
+    // consumed by th_decode_packetin below before any further iteration.
+    var first_video: ?[]const u8 = null;
+    while (true) {
+        const pkt = (iter.next(allocator) catch |err| {
+            return TheoraDecodeResult.invalid(ogg_validator.extractErrorMessage(err), header_count, 0);
+        }) orelse break; // stream ended during headers
+        if (header_count == 0) {
+            if (pkt.data.len < 7 or pkt.data[0] != 0x80 or !std.mem.eql(u8, pkt.data[1..7], "theora")) {
+                return TheoraDecodeResult.invalid("First OGG packet is not Theora info header", 0, 0);
+            }
+        }
+        var op = buildPacket(pkt.data, packet_no, if (packet_no == 0) 1 else 0, 0);
+        const ret = theora_c.th_decode_headerin(&info, &tc, &setup, &op);
+        if (ret < 0) {
+            return TheoraDecodeResult.invalid("Theora header decode failed", header_count, ret);
+        }
+        if (ret == 0) {
+            // Not a header: this is the first video packet. Headers complete.
+            first_video = pkt.data;
+            break;
+        }
+        header_count += 1;
+        packet_no += 1;
     }
 
-    // Convert []OggPacket -> []const []const u8 for the validator.
-    var view: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer view.deinit(allocator);
-    view.ensureTotalCapacity(allocator, packet_result.packets.len) catch {
-        return TheoraDecodeResult.invalid("Allocation failure", 0, 0);
-    };
-    for (packet_result.packets) |pkt| {
-        view.appendAssumeCapacity(pkt.data);
+    if (header_count < 3) {
+        return TheoraDecodeResult.invalid(
+            "Theora header sequence incomplete",
+            header_count,
+            theora_c.TH_EBADHEADER,
+        );
     }
 
-    return validateTheoraPackets(view.items);
+    // Allocate decoder context now that we have info + setup.
+    const dec = theora_c.th_decode_alloc(&info, setup);
+    if (dec == null) {
+        return TheoraDecodeResult.invalid("th_decode_alloc returned null", header_count, 0);
+    }
+    defer theora_c.th_decode_free(dec);
+
+    var packets_decoded: u32 = header_count;
+    var frames_decoded: u32 = 0;
+
+    // Decode the held first video packet, then the rest of the stream.
+    if (first_video) |data| {
+        var op = buildPacket(data, packet_no, 0, 0);
+        const ret = theora_c.th_decode_packetin(dec, &op, null);
+        if (ret != 0 and ret != theora_c.TH_DUPFRAME) {
+            return TheoraDecodeResult.invalid("Theora packet decode failed", packets_decoded, ret);
+        }
+        frames_decoded += 1;
+        packets_decoded += 1;
+        packet_no += 1;
+    }
+
+    while (iter.next(allocator) catch |err| {
+        return TheoraDecodeResult.invalid(ogg_validator.extractErrorMessage(err), packets_decoded, 0);
+    }) |pkt| {
+        var op = buildPacket(pkt.data, packet_no, 0, if (pkt.is_eos) 1 else 0);
+        const ret = theora_c.th_decode_packetin(dec, &op, null);
+        // Return values:
+        //   0            : success, full frame decoded
+        //   TH_DUPFRAME  : success, this packet re-uses previous frame
+        //   TH_EBADPACKET: malformed packet
+        //   TH_EIMPL     : unsupported feature in packet
+        if (ret == 0 or ret == theora_c.TH_DUPFRAME) {
+            frames_decoded += 1;
+            packets_decoded += 1;
+            packet_no += 1;
+        } else {
+            return TheoraDecodeResult.invalid("Theora packet decode failed", packets_decoded, ret);
+        }
+    }
+
+    return TheoraDecodeResult.ok(packets_decoded, frames_decoded);
 }
 
 // ============ Tests ============

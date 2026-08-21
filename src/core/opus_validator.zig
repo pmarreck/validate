@@ -193,61 +193,62 @@ pub fn validateOggOpus(file: *FileSource) OpusValidationResult {
 }
 
 /// Validate OGG Opus file with custom allocator.
+/// Streams packets one at a time (PacketIter) so anonymous memory stays
+/// O(largest packet) — the old extract-all-packets approach held ~the whole
+/// file resident and was OOM-killed under the memory-ceiling gate.
+/// Note: the decoder is created directly from the OpusHead packet while it
+/// is still borrowed from the iterator (libopus copies the channel mapping),
+/// so nothing needs to outlive the packet walk.
 pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) OpusValidationResult {
-    // Extract packets from OGG container
-    var packet_result = ogg_validator.extractPackets(allocator, file) catch |err| {
-        return OpusValidationResult.invalid(switch (err) {
-            error.TruncatedPageHeader => "Truncated OGG page header",
-            error.InvalidOggSignature => "Invalid OGG signature",
-            error.UnsupportedOggVersion => "Unsupported OGG version",
-            error.TruncatedSegmentTable => "Truncated OGG segment table",
-            error.TruncatedPageData => "Truncated OGG page data",
-            else => "Failed to extract OGG packets",
-        }, 0);
+    const insufficient = "Insufficient Opus packets (need at least 3)";
+
+    var iter = ogg_validator.PacketIter.init(file) catch |err| {
+        return OpusValidationResult.invalid(ogg_validator.extractErrorMessage(err), 0);
     };
-    defer packet_result.deinit(allocator);
+    defer iter.deinit(allocator);
 
-    const packets = packet_result.packets;
+    // Packet 0: OpusHead (RFC 7845). Parse parameters and create the decoder
+    // while the packet bytes are valid.
+    var channels: i32 = 0;
+    var decoder_opt: ?DecoderHandle = null;
+    {
+        const pkt = (iter.next(allocator) catch |err| {
+            return OpusValidationResult.invalid(ogg_validator.extractErrorMessage(err), 0);
+        }) orelse return OpusValidationResult.invalid(insufficient, 0);
 
-    // Need at least 2 header packets + 1 audio packet
-    if (packets.len < 3) {
-        return OpusValidationResult.invalid("Insufficient Opus packets (need at least 3)", 0);
+        const opus_head = pkt.data;
+        if (opus_head.len < 19 or !std.mem.eql(u8, opus_head[0..8], "OpusHead")) {
+            return OpusValidationResult.invalid("Invalid OpusHead packet", 0);
+        }
+
+        const version = opus_head[8];
+        if (version != 1) {
+            return OpusValidationResult.invalid(errmsg.unsupported("Opus version"), 0);
+        }
+
+        channels = opus_head[9];
+        if (channels < 1 or channels > 255) {
+            return OpusValidationResult.invalid(errmsg.unsupported("channel count"), 0);
+        }
+
+        // Sample rate from OpusHead is just informational (original input
+        // sample rate); Opus always decodes at 48kHz internally.
+        decoder_opt = createDecoder(48000, channels, opus_head) catch {
+            return OpusValidationResult.invalid("Failed to create Opus decoder", 0);
+        };
     }
-
-    // Parse OpusHead (first packet)
-    // RFC 7845: Must start with "OpusHead" magic
-    const opus_head = packets[0].data;
-    if (opus_head.len < 19 or !std.mem.eql(u8, opus_head[0..8], "OpusHead")) {
-        return OpusValidationResult.invalid("Invalid OpusHead packet", 0);
-    }
-
-    // Extract parameters from OpusHead
-    const version = opus_head[8];
-    if (version != 1) {
-        return OpusValidationResult.invalid(errmsg.unsupported("Opus version"), 0);
-    }
-
-    const channels: i32 = opus_head[9];
-    if (channels < 1 or channels > 255) {
-        return OpusValidationResult.invalid(errmsg.unsupported("channel count"), 0);
-    }
-
-    // Sample rate from OpusHead is just informational (original input sample rate)
-    // Opus always decodes at 48kHz internally
-    const decode_sample_rate: i32 = 48000;
-
-    // Verify OpusTags (second packet)
-    // Must start with "OpusTags"
-    const opus_tags = packets[1].data;
-    if (opus_tags.len < 8 or !std.mem.eql(u8, opus_tags[0..8], "OpusTags")) {
-        return OpusValidationResult.invalid("Invalid OpusTags packet", 0);
-    }
-
-    // Create decoder (multistream for >2 channels, simple for 1-2)
-    const decoder = createDecoder(decode_sample_rate, channels, opus_head) catch {
-        return OpusValidationResult.invalid("Failed to create Opus decoder", 0);
-    };
+    const decoder = decoder_opt.?;
     defer destroyDecoder(decoder);
+
+    // Packet 1: OpusTags. Must start with "OpusTags".
+    {
+        const pkt = (iter.next(allocator) catch |err| {
+            return OpusValidationResult.invalid(ogg_validator.extractErrorMessage(err), 1);
+        }) orelse return OpusValidationResult.invalid(insufficient, 0);
+        if (pkt.data.len < 8 or !std.mem.eql(u8, pkt.data[0..8], "OpusTags")) {
+            return OpusValidationResult.invalid("Invalid OpusTags packet", 0);
+        }
+    }
 
     // Allocate output buffer (max 120ms at 48kHz, scaled by channels)
     const max_frame_size: usize = 5760 * @as(usize, @intCast(@max(channels, 1)));
@@ -256,11 +257,13 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) Opu
     };
     defer allocator.free(output_buffer);
 
-    // Decode audio packets (skip first 2 header packets)
+    // Decode audio packets as they stream in
     var packets_decoded: u32 = 2; // Count headers
     var samples_decoded: u64 = 0;
 
-    for (packets[2..]) |packet| {
+    while (iter.next(allocator) catch |err| {
+        return OpusValidationResult.invalid(ogg_validator.extractErrorMessage(err), packets_decoded);
+    }) |packet| {
         const samples = validateOpusPacket(decoder, packet.data, output_buffer, channels) catch {
             return OpusValidationResult.invalid("Opus decode error", packets_decoded);
         };
@@ -268,6 +271,12 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) Opu
         if (samples > 0) {
             samples_decoded += @intCast(samples);
         }
+    }
+
+    // Headers alone are not a valid Opus stream (historical contract:
+    // 2 headers + at least 1 audio packet).
+    if (packets_decoded < 3) {
+        return OpusValidationResult.invalid(insufficient, 0);
     }
 
     return OpusValidationResult.ok(packets_decoded, samples_decoded);

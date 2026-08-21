@@ -42,6 +42,15 @@
 # a no-op under the FFI per-task arena; scratch had accumulated ~1:1 with slice
 # bytes once every sample was decoded).
 #
+# 2026-08-21: opus_ogg, vorbis_ogg, theora_ogv converted to true streaming
+# (ogg_validator.PacketIter — one packet resident at a time, replacing the
+# extract-every-packet slurp in the deep ogg path). Witnessed in the
+# conversion worktree, cgroup mode: opus_ogg rc=0 26s / vorbis_ogg rc=0 19s
+# (64MiB ceiling), theora_ogv rc=0 10s (512MiB ceiling). For these three,
+# `streams` reflects an architected incremental walk, not merely evictable
+# file pages. Detection unchanged: sweep 1400/1400 before AND after,
+# raw TSVs byte-identical; zero new false positives on 8 known-good.
+#
 # mkv_cc was originally UNWITNESSED (mkvmerge absent on the baseline box);
 # its row was inferred `streams` from the sibling matroska demux path
 # (h265_mkv). The first real witness (2026-08-19, mkvmerge now present,
@@ -53,11 +62,11 @@ h264_mp4	streams
 h265_mp4	streams
 h265_mkv	streams
 vp9_webm	resident
-theora_ogv	resident
+theora_ogv	streams
 mkv_cc	resident
 mp3	streams
 flac	streams
 aac_m4a	streams
-opus_ogg	resident
-vorbis_ogg	resident
+opus_ogg	streams
+vorbis_ogg	streams
 wav	streams

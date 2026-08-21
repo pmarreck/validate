@@ -220,9 +220,172 @@ pub const PacketExtractResult = struct {
     }
 };
 
-/// Extract all packets from an OGG file.
+/// Map a packet-walk error to the user-facing message every ogg-family
+/// validator historically produced. Shared so the streaming consumers
+/// (vorbis/opus/theora/deep-dispatch) stay message-identical.
+pub fn extractErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.TruncatedPageHeader => "Truncated OGG page header",
+        error.InvalidOggSignature => "Invalid OGG signature",
+        error.UnsupportedOggVersion => "Unsupported OGG version",
+        error.TruncatedSegmentTable => "Truncated OGG segment table",
+        error.TruncatedPageData => "Truncated OGG page data",
+        else => "Failed to extract OGG packets",
+    };
+}
+
+/// Streaming OGG packet reader: incremental demux that yields ONE packet at a
+/// time so anonymous memory stays O(largest packet) instead of O(file size).
+/// This is the memory-ceiling ("streams" vs "resident") fix for the ogg
+/// families — extractPackets() duplicated every packet into the (arena-backed)
+/// allocator, which OOM-killed multi-GiB files under a cgroup MemoryMax.
+/// Technique: same page walk as the old extractPackets (first logical
+/// bitstream only; multiplexed pages skipped), but the packet-assembly buffer
+/// is yielded by reference and cleared-retaining-capacity on the next call.
+pub const PacketIter = struct {
+    file: *FileSource,
+    packet_buffer: std.ArrayListUnmanaged(u8) = .empty,
+    serial_number: ?u32 = null,
+    packet_no: u64 = 0,
+    current_granule: i64 = -1,
+    /// Segment table of the page currently being drained.
+    segment_table: [255]u8 = undefined,
+    n_segments: usize = 0,
+    seg_idx: usize = 0,
+    page_is_bos: bool = false,
+    page_is_eos: bool = false,
+    at_eof: bool = false,
+    /// True while packet_buffer holds a packet already handed to the caller;
+    /// the next call to next() reclaims it.
+    yielded: bool = false,
+
+    pub fn init(file: *FileSource) !PacketIter {
+        try file.seekTo(0);
+        return .{ .file = file };
+    }
+
+    pub fn deinit(self: *PacketIter, allocator: std.mem.Allocator) void {
+        self.packet_buffer.deinit(allocator);
+    }
+
+    /// True when no payload bytes remain in the current page's segment table.
+    /// Used to mark is_eos: a packet completing on an EOS page with nothing
+    /// after it is the logical stream's final packet.
+    fn pageRemainderEmpty(self: *const PacketIter) bool {
+        for (self.segment_table[self.seg_idx..self.n_segments]) |s| {
+            if (s != 0) return false;
+        }
+        return true;
+    }
+
+    /// Yield the next packet, or null at end of stream. The returned
+    /// packet's `data` slice is owned by the iterator and is INVALIDATED
+    /// by the next call to next() (or deinit()); callers that need it
+    /// longer must dupe it.
+    pub fn next(self: *PacketIter, allocator: std.mem.Allocator) !?OggPacket {
+        if (self.yielded) {
+            self.packet_buffer.clearRetainingCapacity();
+            self.yielded = false;
+        }
+        if (self.at_eof) return null;
+
+        while (true) {
+            // Drain segments of the current page.
+            while (self.seg_idx < self.n_segments) {
+                const seg_size: usize = self.segment_table[self.seg_idx];
+                self.seg_idx += 1;
+
+                if (seg_size > 0) {
+                    const old_len = self.packet_buffer.items.len;
+                    try self.packet_buffer.resize(allocator, old_len + seg_size);
+                    const bytes_read = try self.file.read(self.packet_buffer.items[old_len..]);
+                    if (bytes_read < seg_size) {
+                        return error.TruncatedPageData;
+                    }
+                }
+
+                // Segment size < 255 terminates a packet; zero-length
+                // packets are skipped (matches historical extractPackets).
+                if (seg_size < 255 and self.packet_buffer.items.len > 0) {
+                    const pkt = OggPacket{
+                        .data = self.packet_buffer.items,
+                        .is_bos = self.page_is_bos and self.packet_no == 0,
+                        .is_eos = self.page_is_eos and self.pageRemainderEmpty(),
+                        .granule_pos = self.current_granule,
+                        .packet_no = self.packet_no,
+                    };
+                    self.packet_no += 1;
+                    self.yielded = true;
+                    return pkt;
+                }
+            }
+
+            // Page exhausted — read the next page header (27 bytes).
+            var header: [27]u8 = undefined;
+            const header_bytes = try self.file.read(&header);
+
+            if (header_bytes == 0) {
+                self.at_eof = true;
+                // Trailing partial packet (invalid stream, tolerated).
+                if (self.packet_buffer.items.len > 0) {
+                    const pkt = OggPacket{
+                        .data = self.packet_buffer.items,
+                        .is_bos = false,
+                        .is_eos = true,
+                        .granule_pos = self.current_granule,
+                        .packet_no = self.packet_no,
+                    };
+                    self.packet_no += 1;
+                    self.yielded = true;
+                    return pkt;
+                }
+                return null;
+            }
+            if (header_bytes < 27) return error.TruncatedPageHeader;
+            if (!std.mem.eql(u8, header[0..4], "OggS")) return error.InvalidOggSignature;
+            if (header[4] != 0) return error.UnsupportedOggVersion;
+
+            const header_type = header[5];
+            const page_serial = std.mem.readInt(u32, header[14..18], .little);
+            const n_segments: usize = header[26];
+
+            if (self.serial_number == null) {
+                self.serial_number = page_serial;
+            } else if (self.serial_number.? != page_serial) {
+                // Skip pages from other bitstreams (multiplexed OGG).
+                var seg_table: [255]u8 = undefined;
+                var skip_size: usize = 0;
+                if (n_segments > 0) {
+                    _ = try self.file.read(seg_table[0..n_segments]);
+                    for (seg_table[0..n_segments]) |s| {
+                        skip_size += s;
+                    }
+                }
+                try self.file.seekBy(@intCast(skip_size));
+                continue;
+            }
+
+            self.page_is_bos = (header_type & 0x02) != 0;
+            self.page_is_eos = (header_type & 0x04) != 0;
+            self.current_granule = @bitCast(std.mem.readInt(u64, header[6..14], .little));
+
+            if (n_segments > 0) {
+                const seg_bytes = try self.file.read(self.segment_table[0..n_segments]);
+                if (seg_bytes < n_segments) {
+                    return error.TruncatedSegmentTable;
+                }
+            }
+            self.n_segments = n_segments;
+            self.seg_idx = 0;
+        }
+    }
+};
+
+/// Extract all packets from an OGG file into owned memory.
 /// Caller must call result.deinit() when done.
 /// Only extracts packets from the first logical bitstream encountered.
+/// NOTE: this holds every packet resident (~file size) — use PacketIter for
+/// anything that may see large files; this remains for small inputs/tests.
 pub fn extractPackets(allocator: std.mem.Allocator, file: *FileSource) !PacketExtractResult {
     var packets: std.ArrayListUnmanaged(OggPacket) = .empty;
     errdefer {
@@ -232,149 +395,20 @@ pub fn extractPackets(allocator: std.mem.Allocator, file: *FileSource) !PacketEx
         packets.deinit(allocator);
     }
 
-    // Buffer for building packets that span multiple segments
-    var packet_buffer: std.ArrayListUnmanaged(u8) = .empty;
-    defer packet_buffer.deinit(allocator);
+    var iter = try PacketIter.init(file);
+    defer iter.deinit(allocator);
 
-    var serial_number: ?u32 = null;
-    var packet_no: u64 = 0;
-    var current_granule: i64 = -1;
-    var is_continuation: bool = false;
-
-    // Seek to beginning
-    try file.seekTo(0);
-
-    // Read pages
-    while (true) {
-        // Read page header (27 bytes minimum)
-        var header: [27]u8 = undefined;
-        const header_bytes = try file.read(&header);
-
-        // End of file
-        if (header_bytes == 0) {
-            break;
-        }
-
-        if (header_bytes < 27) {
-            return error.TruncatedPageHeader;
-        }
-
-        // Verify capture pattern
-        if (!std.mem.eql(u8, header[0..4], "OggS")) {
-            return error.InvalidOggSignature;
-        }
-
-        // Check version
-        if (header[4] != 0) {
-            return error.UnsupportedOggVersion;
-        }
-
-        // Header type flags
-        const header_type = header[5];
-        const is_continued_packet = (header_type & 0x01) != 0;
-        const is_bos = (header_type & 0x02) != 0;
-        const is_eos = (header_type & 0x04) != 0;
-
-        // Granule position (8 bytes, little-endian, signed)
-        current_granule = @bitCast(std.mem.readInt(u64, header[6..14], .little));
-
-        // Serial number
-        const page_serial = std.mem.readInt(u32, header[14..18], .little);
-
-        // Track first serial number (ignore other streams)
-        if (serial_number == null) {
-            serial_number = page_serial;
-        } else if (serial_number != page_serial) {
-            // Skip pages from other bitstreams (multiplexed OGG)
-            const n_segments: usize = header[26];
-            var skip_size: usize = 0;
-            var seg_table: [255]u8 = undefined;
-            if (n_segments > 0) {
-                _ = try file.read(seg_table[0..n_segments]);
-                for (seg_table[0..n_segments]) |s| {
-                    skip_size += s;
-                }
-            }
-            try file.seekBy(@intCast(skip_size));
-            continue;
-        }
-
-        // Number of segments
-        const n_segments: usize = header[26];
-
-        // Read segment table
-        var segment_table: [255]u8 = undefined;
-        if (n_segments > 0) {
-            const seg_bytes = try file.read(segment_table[0..n_segments]);
-            if (seg_bytes < n_segments) {
-                return error.TruncatedSegmentTable;
-            }
-        }
-
-        // Handle continuation mismatch
-        if (is_continued_packet and !is_continuation) {
-            // We don't have a partial packet to continue - skip this segment
-            // This can happen if we started reading mid-stream
-        }
-
-        // Process segments
-        for (segment_table[0..n_segments]) |seg_size| {
-            // Read segment data
-            if (seg_size > 0) {
-                const old_len = packet_buffer.items.len;
-                try packet_buffer.resize(allocator, old_len + seg_size);
-                const bytes_read = try file.read(packet_buffer.items[old_len..]);
-                if (bytes_read < seg_size) {
-                    return error.TruncatedPageData;
-                }
-            }
-
-            // Segment size < 255 means end of packet
-            if (seg_size < 255) {
-                if (packet_buffer.items.len > 0) {
-                    // Complete packet - add to list
-                    const packet_data = try allocator.dupe(u8, packet_buffer.items);
-                    errdefer allocator.free(packet_data);
-
-                    try packets.append(allocator, .{
-                        .data = packet_data,
-                        .is_bos = is_bos and packet_no == 0,
-                        .is_eos = false, // Will set on last packet
-                        .granule_pos = current_granule,
-                        .packet_no = packet_no,
-                    });
-                    packet_no += 1;
-                }
-                packet_buffer.clearRetainingCapacity();
-                is_continuation = false;
-            } else {
-                // Segment size == 255, packet continues
-                is_continuation = true;
-            }
-        }
-
-        // Mark EOS on last page
-        if (is_eos and packets.items.len > 0) {
-            packets.items[packets.items.len - 1].is_eos = true;
-        }
-    }
-
-    // Handle any remaining partial packet (shouldn't happen in valid OGG)
-    if (packet_buffer.items.len > 0) {
-        const packet_data = try allocator.dupe(u8, packet_buffer.items);
+    while (try iter.next(allocator)) |pkt| {
+        const packet_data = try allocator.dupe(u8, pkt.data);
         errdefer allocator.free(packet_data);
-        try packets.append(allocator, .{
-            .data = packet_data,
-            .is_bos = false,
-            .is_eos = true,
-            .granule_pos = current_granule,
-            .packet_no = packet_no,
-        });
+        var owned = pkt;
+        owned.data = packet_data;
+        try packets.append(allocator, owned);
     }
 
     return .{
         .packets = try packets.toOwnedSlice(allocator),
-        .serial_number = serial_number orelse 0,
+        .serial_number = iter.serial_number orelse 0,
         .error_message = null,
     };
 }
@@ -610,6 +644,132 @@ test "OGG packet extraction from single-packet page" {
     try std.testing.expectEqualStrings("Hello", result.packets[0].data);
     try std.testing.expect(result.packets[0].is_bos);
     try std.testing.expect(result.packets[0].is_eos);
+}
+
+/// Test helper: append one OGG page (header + segment table + data) to `out`,
+/// with a correct page CRC. `segments` is the raw segment table; `data` must
+/// be exactly the sum of the segment sizes.
+fn testAppendPage(
+	out: *std.ArrayListUnmanaged(u8),
+	allocator: std.mem.Allocator,
+	flags: u8,
+	serial: u32,
+	segments: []const u8,
+	data: []const u8,
+) !void {
+	var total: usize = 0;
+	for (segments) |s| total += s;
+	std.debug.assert(total == data.len);
+
+	const start = out.items.len;
+	try out.appendSlice(allocator, "OggS");
+	try out.append(allocator, 0); // version
+	try out.append(allocator, flags);
+	try out.appendSlice(allocator, &[_]u8{0} ** 8); // granule position
+	var le4: [4]u8 = undefined;
+	std.mem.writeInt(u32, &le4, serial, .little);
+	try out.appendSlice(allocator, &le4); // serial number
+	try out.appendSlice(allocator, &[_]u8{0} ** 4); // page sequence
+	try out.appendSlice(allocator, &[_]u8{0} ** 4); // CRC placeholder
+	try out.append(allocator, @intCast(segments.len));
+	try out.appendSlice(allocator, segments);
+	try out.appendSlice(allocator, data);
+
+	const crc = oggCrc32(out.items[start..]);
+	std.mem.writeInt(u32, out.items[start + 22 ..][0..4], crc, .little);
+}
+
+test "PacketIter yields packets one at a time with buffer reuse" {
+	var page: std.ArrayListUnmanaged(u8) = .empty;
+	defer page.deinit(std.testing.allocator);
+	// One page, two packets: "Hello" (seg 5) and "Wld" (seg 3), BOS|EOS.
+	try testAppendPage(&page, std.testing.allocator, 0x06, 1, &.{ 5, 3 }, "HelloWld");
+
+	var src = FileSource.fromBuffer(page.items);
+	defer src.close();
+	var iter = try PacketIter.init(&src);
+	defer iter.deinit(std.testing.allocator);
+
+	const p1 = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqualStrings("Hello", p1.data);
+	try std.testing.expect(p1.is_bos);
+	try std.testing.expect(!p1.is_eos);
+	try std.testing.expectEqual(@as(u64, 0), p1.packet_no);
+
+	const p2 = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqualStrings("Wld", p2.data);
+	try std.testing.expect(!p2.is_bos);
+	try std.testing.expect(p2.is_eos);
+	try std.testing.expectEqual(@as(u64, 1), p2.packet_no);
+
+	try std.testing.expectEqual(@as(?OggPacket, null), try iter.next(std.testing.allocator));
+	// Exhausted iterator stays exhausted.
+	try std.testing.expectEqual(@as(?OggPacket, null), try iter.next(std.testing.allocator));
+}
+
+test "PacketIter reassembles packet spanning two pages" {
+	var stream: std.ArrayListUnmanaged(u8) = .empty;
+	defer stream.deinit(std.testing.allocator);
+
+	var payload: [300]u8 = undefined;
+	for (&payload, 0..) |*b, i| b.* = @truncate(i);
+
+	// Page 1: BOS, one 255-byte segment (packet continues).
+	try testAppendPage(&stream, std.testing.allocator, 0x02, 1, &.{255}, payload[0..255]);
+	// Page 2: continuation | EOS, remaining 45 bytes terminate the packet.
+	try testAppendPage(&stream, std.testing.allocator, 0x05, 1, &.{45}, payload[255..300]);
+
+	var src = FileSource.fromBuffer(stream.items);
+	defer src.close();
+	var iter = try PacketIter.init(&src);
+	defer iter.deinit(std.testing.allocator);
+
+	const p = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqual(@as(usize, 300), p.data.len);
+	try std.testing.expectEqualSlices(u8, &payload, p.data);
+	try std.testing.expect(p.is_eos);
+	try std.testing.expectEqual(@as(?OggPacket, null), try iter.next(std.testing.allocator));
+}
+
+test "PacketIter skips pages from other logical bitstreams" {
+	var stream: std.ArrayListUnmanaged(u8) = .empty;
+	defer stream.deinit(std.testing.allocator);
+
+	try testAppendPage(&stream, std.testing.allocator, 0x02, 1, &.{3}, "AAA");
+	try testAppendPage(&stream, std.testing.allocator, 0x02, 2, &.{3}, "BBB"); // other serial
+	try testAppendPage(&stream, std.testing.allocator, 0x04, 1, &.{3}, "CCC");
+
+	var src = FileSource.fromBuffer(stream.items);
+	defer src.close();
+	var iter = try PacketIter.init(&src);
+	defer iter.deinit(std.testing.allocator);
+
+	const p1 = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqualStrings("AAA", p1.data);
+	const p2 = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqualStrings("CCC", p2.data);
+	try std.testing.expect(p2.is_eos);
+	try std.testing.expectEqual(@as(?OggPacket, null), try iter.next(std.testing.allocator));
+}
+
+test "PacketIter yields trailing partial packet at EOF as EOS" {
+	var stream: std.ArrayListUnmanaged(u8) = .empty;
+	defer stream.deinit(std.testing.allocator);
+
+	var payload: [255]u8 = undefined;
+	for (&payload, 0..) |*b, i| b.* = @truncate(i);
+	// Single page whose only segment is 255 bytes (packet never terminates).
+	try testAppendPage(&stream, std.testing.allocator, 0x02, 1, &.{255}, &payload);
+
+	var src = FileSource.fromBuffer(stream.items);
+	defer src.close();
+	var iter = try PacketIter.init(&src);
+	defer iter.deinit(std.testing.allocator);
+
+	const p = (try iter.next(std.testing.allocator)) orelse return error.TestExpectedPacket;
+	try std.testing.expectEqualSlices(u8, &payload, p.data);
+	try std.testing.expect(p.is_eos);
+	try std.testing.expectEqual(@as(?OggPacket, null), try iter.next(std.testing.allocator));
 }
 
 test "OGG packet extraction with multi-segment packet" {

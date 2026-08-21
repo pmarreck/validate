@@ -820,6 +820,19 @@ pub fn validateOgg(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.ogg);
 }
 
+/// Codec-sniff error mapping for validateOggDeep (uses the errmsg.* wording
+/// this dispatcher has always emitted, unlike ogg_validator.extractErrorMessage).
+fn sniffErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.TruncatedPageHeader => errmsg.truncated("OGG page header"),
+        error.InvalidOggSignature => errmsg.invalidSignature("OGG"),
+        error.UnsupportedOggVersion => errmsg.unsupported("OGG version"),
+        error.TruncatedSegmentTable => errmsg.truncated("OGG segment table"),
+        error.TruncatedPageData => errmsg.truncated("OGG page data"),
+        else => "Failed to extract OGG packets",
+    };
+}
+
 /// Deep OGG validation using Vorbis or Opus codec decode.
 /// First verifies OGG page CRCs, then decodes audio packets.
 pub fn validateOggDeep(allocator: Allocator, source: *FileSource) ValidationResult {
@@ -835,25 +848,25 @@ pub fn validateOggDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "to start", .structural);
     };
 
-    // Extract packets to determine codec type
-    var packet_result = ogg_validator.extractPackets(allocator, source) catch |err| {
-        return ValidationResult.invalidWithDepth(.ogg, switch (err) {
-            error.TruncatedPageHeader => errmsg.truncated("OGG page header"),
-            error.InvalidOggSignature => errmsg.invalidSignature("OGG"),
-            error.UnsupportedOggVersion => errmsg.unsupported("OGG version"),
-            error.TruncatedSegmentTable => errmsg.truncated("OGG segment table"),
-            error.TruncatedPageData => errmsg.truncated("OGG page data"),
-            else => "Failed to extract OGG packets",
-        }, .full);
+    // Sniff the codec type from the FIRST packet only. The CRC pass above
+    // already verified every container byte, so walking the rest of the
+    // stream here adds nothing — and the old extract-everything approach
+    // held ~the whole file in anonymous memory (OOM-killed multi-GiB files
+    // under the memory-ceiling gate).
+    var sniff_iter = ogg_validator.PacketIter.init(source) catch |err| {
+        return ValidationResult.invalidWithDepth(.ogg, sniffErrorMessage(err), .full);
     };
-    defer packet_result.deinit(allocator);
+    defer sniff_iter.deinit(allocator);
 
-    if (packet_result.packets.len == 0) {
+    const first_opt = sniff_iter.next(allocator) catch |err| {
+        return ValidationResult.invalidWithDepth(.ogg, sniffErrorMessage(err), .full);
+    };
+    const first = first_opt orelse {
         return ValidationResult.invalidWithDepth(.ogg, "No packets found in OGG stream", .full);
-    }
+    };
 
     // Determine codec type from first packet
-    const first_packet = packet_result.packets[0].data;
+    const first_packet = first.data;
 
     // Check for Vorbis: first byte 0x01 followed by "vorbis"
     if (first_packet.len >= 7 and first_packet[0] == 0x01 and std.mem.eql(u8, first_packet[1..7], "vorbis")) {

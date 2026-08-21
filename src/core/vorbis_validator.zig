@@ -147,79 +147,53 @@ pub fn validateOggVorbis(file: *FileSource) VorbisValidationResult {
 }
 
 /// Validate OGG Vorbis file with custom allocator.
+/// Streams packets one at a time (PacketIter) so anonymous memory stays
+/// O(largest packet) — the old extract-all-packets approach held ~the whole
+/// file resident and was OOM-killed under the memory-ceiling gate.
 pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: *FileSource) VorbisValidationResult {
-    // Extract packets from OGG container
-    var packet_result = ogg_validator.extractPackets(allocator, file) catch |err| {
-        return VorbisValidationResult.invalid(switch (err) {
-            error.TruncatedPageHeader => "Truncated OGG page header",
-            error.InvalidOggSignature => "Invalid OGG signature",
-            error.UnsupportedOggVersion => "Unsupported OGG version",
-            error.TruncatedSegmentTable => "Truncated OGG segment table",
-            error.TruncatedPageData => "Truncated OGG page data",
-            else => "Failed to extract OGG packets",
-        }, 0);
+    const insufficient = "Insufficient Vorbis packets (need at least 4)";
+
+    var iter = ogg_validator.PacketIter.init(file) catch |err| {
+        return VorbisValidationResult.invalid(ogg_validator.extractErrorMessage(err), 0);
     };
-    defer packet_result.deinit(allocator);
+    defer iter.deinit(allocator);
 
-    const packets = packet_result.packets;
-
-    // Need at least 3 header packets + 1 audio packet
-    if (packets.len < 4) {
-        return VorbisValidationResult.invalid("Insufficient Vorbis packets (need at least 4)", 0);
-    }
-
-    // Verify Vorbis identification header (packet 0)
-    // Must start with 0x01 followed by "vorbis"
-    if (packets[0].data.len < 7 or
-        packets[0].data[0] != 0x01 or
-        !std.mem.eql(u8, packets[0].data[1..7], "vorbis"))
-    {
-        return VorbisValidationResult.invalid("Invalid Vorbis identification header", 0);
-    }
-
-    // Verify comment header (packet 1)
-    // Must start with 0x03 followed by "vorbis"
-    if (packets[1].data.len < 7 or
-        packets[1].data[0] != 0x03 or
-        !std.mem.eql(u8, packets[1].data[1..7], "vorbis"))
-    {
-        return VorbisValidationResult.invalid("Invalid Vorbis comment header", 0);
-    }
-
-    // Verify setup header (packet 2)
-    // Must start with 0x05 followed by "vorbis"
-    if (packets[2].data.len < 7 or
-        packets[2].data[0] != 0x05 or
-        !std.mem.eql(u8, packets[2].data[1..7], "vorbis"))
-    {
-        return VorbisValidationResult.invalid("Invalid Vorbis setup header", 0);
-    }
-
-    // Initialize decoder and submit headers
+    // Initialize decoder; headers are submitted as they arrive (libvorbis
+    // copies what it keeps — the iterator's buffer is safe to reuse).
     var decoder = VorbisDecoder.init();
     defer decoder.deinit();
 
-    // Submit the 3 header packets
-    decoder.submitHeader(packets[0].data, 0) catch {
-        return VorbisValidationResult.invalid("Failed to parse Vorbis identification header", 0);
+    // The 3 mandatory header packets: identification (0x01), comment (0x03),
+    // setup (0x05), each followed by "vorbis".
+    const header_specs = [3]struct { magic: u8, bad_magic: []const u8, parse_fail: []const u8 }{
+        .{ .magic = 0x01, .bad_magic = "Invalid Vorbis identification header", .parse_fail = "Failed to parse Vorbis identification header" },
+        .{ .magic = 0x03, .bad_magic = "Invalid Vorbis comment header", .parse_fail = "Failed to parse Vorbis comment header" },
+        .{ .magic = 0x05, .bad_magic = "Invalid Vorbis setup header", .parse_fail = "Failed to parse Vorbis setup header" },
     };
-    decoder.submitHeader(packets[1].data, 1) catch {
-        return VorbisValidationResult.invalid("Failed to parse Vorbis comment header", 1);
-    };
-    decoder.submitHeader(packets[2].data, 2) catch {
-        return VorbisValidationResult.invalid("Failed to parse Vorbis setup header", 2);
-    };
+    inline for (header_specs, 0..) |spec, i| {
+        const pkt = (iter.next(allocator) catch |err| {
+            return VorbisValidationResult.invalid(ogg_validator.extractErrorMessage(err), i);
+        }) orelse return VorbisValidationResult.invalid(insufficient, i);
+        if (pkt.data.len < 7 or pkt.data[0] != spec.magic or !std.mem.eql(u8, pkt.data[1..7], "vorbis")) {
+            return VorbisValidationResult.invalid(spec.bad_magic, 0);
+        }
+        decoder.submitHeader(pkt.data, i) catch {
+            return VorbisValidationResult.invalid(spec.parse_fail, i);
+        };
+    }
 
     // Initialize synthesis
     decoder.initSynthesis() catch {
         return VorbisValidationResult.invalid("Failed to initialize Vorbis synthesis", 3);
     };
 
-    // Decode audio packets
+    // Decode audio packets as they stream in
     var packets_decoded: u32 = 3; // Count headers
     var samples_decoded: u64 = 0;
 
-    for (packets[3..]) |packet| {
+    while (iter.next(allocator) catch |err| {
+        return VorbisValidationResult.invalid(ogg_validator.extractErrorMessage(err), packets_decoded);
+    }) |packet| {
         const samples = decoder.decodePacket(packet.data) catch {
             return VorbisValidationResult.invalid("Vorbis decode error", packets_decoded);
         };
@@ -227,6 +201,12 @@ pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: *FileSource) V
         if (samples > 0) {
             samples_decoded += @intCast(samples);
         }
+    }
+
+    // Headers alone are not a valid Vorbis stream (historical contract:
+    // at least 3 headers + 1 audio packet).
+    if (packets_decoded < 4) {
+        return VorbisValidationResult.invalid(insufficient, 0);
     }
 
     return VorbisValidationResult.ok(packets_decoded, samples_decoded);
