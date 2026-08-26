@@ -53,6 +53,25 @@ at the bottom. Older completed sections were rolled up — full history lives in
       decode (plain mkvmerge remux: 1/150 sniper before AND after — h264
       syntax leniency, pre-existing, worth its own task); Opus-in-MKV audio
       still whole-track-copies (collectAllFramesWithStatus).
+- [x] **URGENT crash triage (LPM 2026-08-25 via Einstein 2026-08-26): no
+      crash reproduces at head.** Full evidence in
+      ~/Code/inbox/2026-08-26-from-validate-triage-no-crash-at-head-...
+      TL;DR: the only real crashes were Aug 19 SIGBUS cores from the
+      corruption-harness tmpfile race (fixed + fenced, 897f9ef73 +
+      corruption_experiment_tmpfile_isolation); the Aug 21 Downloads scan
+      deaths were environmental kills (I/O storm wedge, then Einstein's
+      deliberate 16:28 PGID kill), not code. Verified today at c41a97b11:
+      build+full ./test green; three files from the scan death list
+      validate clean incl. a no-CRC scene HEVC MKV under a 512MiB
+      no-swap cgroup. validate_gui re-pinned c41a97b11 this morning with
+      a stale-pin guard. Completed 2026-08-26 10:45 EDT. Curiosity poke:
+      Peter's sighting could still be a GUI window crash rather than the
+      scan dying — one gentle question when he's back, nothing blocks on
+      it. NOTE: LPM note says beta = Sept 15; Einstein's directive said
+      Sept 1 — date needs Einstein's adjudication. LERC closure
+      downgraded to post-freeze (GUI interim lercz link documented;
+      tiffz still unresponsive, re-pinged 2026-08-26).
+
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
       Validate Founding Beta launches 2026-09-01; a named freeze commit +
