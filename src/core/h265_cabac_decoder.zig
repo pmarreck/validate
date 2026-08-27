@@ -327,6 +327,10 @@ pub const H265SliceDecodeInfo = struct {
     transquant_bypass_enabled: bool,
     transform_skip_enabled: bool,
     tiles_enabled: bool,
+    // WPP (wavefront parallel processing) — one CABAC substream per CTU row.
+    // x265 enables this by default, so ignoring it desyncs the decoder at the
+    // end of the first CTU row on virtually every x265 stream.
+    entropy_coding_sync_enabled: bool = false,
     sign_data_hiding_enabled: bool,
 
     // From slice header
@@ -339,12 +343,21 @@ pub const H265SliceDecodeInfo = struct {
 // CABAC Engine for H.265 (arithmetic core identical to H.264)
 // ============================================================================
 
+/// Virtual zero bits the engine may synthesize past the end of the RBSP
+/// before declaring the stream invalid (see readOneBit). Sixteen bytes
+/// covers renormalization over-read plus a stripped all-zero tail; real
+/// truncation removes whole substreams and blows far past this.
+pub const MAX_VIRTUAL_ZERO_BITS: u16 = 128;
+
 pub const H265CabacEngine = struct {
     cod_i_range: u16,
     cod_i_offset: u16,
     reader: *BitReader,
     contexts: [h265_tables.NUM_H265_CONTEXTS]h265_tables.ContextState,
     valid: bool,
+    // Zero-extension budget consumed so far (readOneBit); diagnostic +
+    // gate for the bounded over-read policy.
+    virtual_zero_bits_used: u16 = 0,
     // Diagnostic counters — diagnostic only, no spec semantics. Used by
     // VALIDATE_TRACE_H265_CABAC to figure out which syntax-element family
     // is consuming bins. Bypass_bins counts EACH bit of decodeBypassBits.
@@ -496,6 +509,28 @@ pub const H265CabacEngine = struct {
         return ret;
     }
 
+    /// WPP substream entry (spec 9.3.2.5 arithmetic-engine initialization):
+    /// byte-align the reader and reload the 9-bit codIOffset; codIRange
+    /// restarts at 510. Context variables are NOT touched here — the caller
+    /// either syncs them from the stored row-above state (9.3.2.4) or fully
+    /// re-initializes them (9.3.2.2). Bit exhaustion or a codIOffset of
+    /// 510/511 (forbidden by 9.3.2.5) marks the engine invalid — both are
+    /// corruption signals, never produced by a conformant encoder.
+    pub fn reinitArithmetic(self: *H265CabacEngine) void {
+        self.reader.alignToByte();
+        const b1 = self.reader.readBits(8) orelse {
+            self.valid = false;
+            return;
+        };
+        const b2 = self.reader.readBit() orelse {
+            self.valid = false;
+            return;
+        };
+        self.cod_i_offset = @intCast((@as(u16, @intCast(b1)) << 1) | b2);
+        self.cod_i_range = 510;
+        if (self.cod_i_offset >= 510) self.valid = false;
+    }
+
     fn renormalize(self: *H265CabacEngine) void {
         while (self.cod_i_range < 256) {
             self.cod_i_range <<= 1;
@@ -505,6 +540,21 @@ pub const H265CabacEngine = struct {
 
     fn readOneBit(self: *H265CabacEngine) u16 {
         const bit = self.reader.readBit() orelse {
+            // Bounded zero-extension for reads past the end of the RBSP.
+            // Two conformant reasons a CABAC decode reads past the last
+            // data byte: (1) renormalization legitimately over-reads into
+            // the rbsp trailing bits / cabac_zero_word padding, and (2) an
+            // Annex-B demuxer cannot distinguish a NAL's own trailing zero
+            // bytes from byte-stream padding zeros, so the NAL iterator's
+            // trailing-zero strip can eat real final bytes (witnessed on an
+            // x265 BluRay IDR whose slice payload ends in 0x00). Reference
+            // decoders (ffmpeg, libde265) zero-extend unconditionally; we
+            // keep a budget so genuine truncation — which starves the
+            // decode by whole substreams, not a byte — still surfaces.
+            if (self.virtual_zero_bits_used < MAX_VIRTUAL_ZERO_BITS) {
+                self.virtual_zero_bits_used += 1;
+                return 0;
+            }
             self.valid = false;
             return 0;
         };
@@ -1918,9 +1968,20 @@ pub fn validateH265IntraCabac(
     };
 
     const trace_cabac = trace.isEnabled(.h265_cabac);
-    if (trace_cabac) trace.print(.h265_cabac, "slice_enter total_ctus={d} max_ctus={d} pic_w_ctbs={d} pic_h_ctbs={d} log2_ctb={d} rbsp_bits={d} qp={d} sao={} pcm={}", .{
-        total_ctus, max_ctus, info.pic_width_in_ctbs, info.pic_height_in_ctbs, info.log2_ctb_size, cabac_start_bits, info.slice_qp, info.sao_enabled, info.pcm_enabled,
+    if (trace_cabac) trace.print(.h265_cabac, "slice_enter total_ctus={d} max_ctus={d} pic_w_ctbs={d} pic_h_ctbs={d} log2_ctb={d} rbsp_bits={d} qp={d} sao={} pcm={} wpp={}", .{
+        total_ctus, max_ctus, info.pic_width_in_ctbs, info.pic_height_in_ctbs, info.log2_ctb_size, cabac_start_bits, info.slice_qp, info.sao_enabled, info.pcm_enabled, info.entropy_coding_sync_enabled,
     });
+
+    // WPP (entropy_coding_sync) state. Each CTU row is a separate CABAC
+    // substream: contexts memorized after the second CTU of a row seed the
+    // row below (spec 9.3.2.3 storage / 9.3.2.4 synchronization), and every
+    // substream re-initializes the arithmetic engine from a byte-aligned
+    // position (9.3.2.5) after the previous row's end_of_subset_one_bit
+    // (7.3.8.1). This walks the substreams sequentially — the entry-point
+    // offsets from the slice header are deliberately unused, matching how a
+    // conformant single-threaded decoder may operate.
+    const wpp = info.entropy_coding_sync_enabled;
+    var wpp_ctx_saved: ?[h265_tables.NUM_H265_CONTEXTS]h265_tables.ContextState = null;
 
     while (ctu_rs_addr < max_ctus) : (ctu_rs_addr += 1) {
         const bits_at_ctu_start = reader.remainingBits();
@@ -1928,7 +1989,12 @@ pub fn validateH265IntraCabac(
             if (trace_cabac) trace.print(.h265_cabac, "ctu_invalid ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
             return buildResult(&engine, ctu_rs_addr, false, bits_at_ctu_start, cabac_start_bits, false);
         }
-        if (reader.remainingBits() < 2) {
+        // Underflow: stop only once BOTH the real bits and the bounded
+        // zero-extension budget are gone. A conformant slice whose final
+        // zero byte(s) were stripped by the Annex-B trailing-zero trim
+        // finishes its last CTUs on virtual zeros; true truncation blows
+        // the budget and surfaces as an engine failure instead.
+        if (reader.remainingBits() < 2 and engine.virtual_zero_bits_used >= MAX_VIRTUAL_ZERO_BITS) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_underflow ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
             break;
         }
@@ -1938,6 +2004,36 @@ pub fn validateH265IntraCabac(
         if (info.log2_ctb_size > 31) return fail_result;
         const x0 = rx << @intCast(info.log2_ctb_size);
         const y0 = ry << @intCast(info.log2_ctb_size);
+
+        // WPP row start (not the slice's first CTU): the previous row's
+        // substream ends with end_of_subset_one_bit (must decode as 1) and
+        // byte alignment; this row's substream re-initializes the arithmetic
+        // engine and syncs contexts from the memorized row-above state (or
+        // fully re-initializes them when the picture is one CTB wide, since
+        // the above-right sync CTB does not exist — spec 9.3.1).
+        if (wpp and rx == 0 and ctu_rs_addr != 0) {
+            const eos_subset = engine.decodeTerminate();
+            if (eos_subset != 1 or !engine.valid) {
+                // A conformant substream always terminates here; a 0 means
+                // the engine is desynced or the bits are corrupt.
+                if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_wpp_subset ctu={d} eos={d} bits_remain={d}", .{ ctu_rs_addr, eos_subset, reader.remainingBits() });
+                return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
+            }
+            engine.reinitArithmetic();
+            if (!engine.valid) {
+                if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_wpp_reinit ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
+                return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
+            }
+            if (info.pic_width_in_ctbs >= 2) {
+                if (wpp_ctx_saved) |saved| {
+                    engine.contexts = saved;
+                } else {
+                    engine.contexts = h265_tables.initContexts(info.slice_qp, true);
+                }
+            } else {
+                engine.contexts = h265_tables.initContexts(info.slice_qp, true);
+            }
+        }
 
         if (info.sao_enabled) {
             parseSaoParams(&engine, info, rx, ry);
@@ -1951,6 +2047,13 @@ pub fn validateH265IntraCabac(
         if (!engine.valid) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_quadtree ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
             return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
+        }
+
+        // WPP context storage (spec 9.3.2.3): after finishing the second CTU
+        // of a row (CtbAddrInRs % W == 1), memorize the context variables to
+        // seed the next row's substream. Never fires when W == 1.
+        if (wpp and rx == 1) {
+            wpp_ctx_saved = engine.contexts;
         }
 
         const bits_after_quadtree = reader.remainingBits();
@@ -2011,6 +2114,58 @@ test "H265 CABAC invalid context" {
     var engine = H265CabacEngine.init(&reader, 26);
 
     _ = engine.decodeBin(h265_tables.NUM_H265_CONTEXTS); // Out of bounds
+    try std.testing.expect(!engine.valid);
+}
+
+test "H265 CABAC WPP reinitArithmetic aligns and reloads 9-bit offset" {
+    // Park the reader mid-byte (bit 19, inside byte 2); reinit must align
+    // forward to the next byte boundary (bit 24 = byte 3) and load exactly
+    // 9 bits from there.
+    var data = [_]u8{ 0xF0, 0x00, 0x55, 0x0A, 0x00, 0x00 };
+    var reader = BitReader.init(&data);
+    _ = reader.skipBits(19);
+    var engine = H265CabacEngine{
+        .cod_i_range = 42,
+        .cod_i_offset = 7,
+        .reader = &reader,
+        .contexts = h265_tables.initContexts(26, true),
+        .valid = true,
+        .context_bins = 0,
+        .bypass_bins = 0,
+        .terminate_bins = 0,
+        .residual_calls = 0,
+        .residual_sig_total = 0,
+        .residual_greater1_total = 0,
+        .residual_remaining_total = 0,
+    };
+    engine.reinitArithmetic();
+    try std.testing.expect(engine.valid);
+    try std.testing.expectEqual(@as(u16, 510), engine.cod_i_range);
+    // After aligning from bit 19 to bit 24 (byte 3 = 0x0A), the 9 bits are
+    // 0x0A (00001010) then the top bit of 0x00 => 0b000010100 = 20.
+    try std.testing.expectEqual(@as(u16, 20), engine.cod_i_offset);
+}
+
+test "H265 CABAC WPP reinitArithmetic flags forbidden codIOffset 511" {
+    // 9 bits of ones => codIOffset = 511, forbidden by spec 9.3.2.5.
+    var data = [_]u8{ 0xFF, 0xFF };
+    var reader = BitReader.init(&data);
+    var engine = H265CabacEngine.init(&reader, 26);
+    // init consumed 9 bits (0x1FF) — also forbidden but init's leniency is
+    // pre-existing; rewind a fresh reader for the reinit path instead.
+    var reader2 = BitReader.init(&data);
+    engine.reader = &reader2;
+    engine.reinitArithmetic();
+    try std.testing.expect(!engine.valid);
+}
+
+test "H265 CABAC WPP reinitArithmetic flags bit exhaustion" {
+    var data = [_]u8{0xAB};
+    var reader = BitReader.init(&data);
+    var engine = H265CabacEngine.init(&reader, 26);
+    // Engine init already consumed 9 of the 8 available bits -> the reader
+    // orelse-0 path zero-filled; a subsequent substream reinit must fail.
+    engine.reinitArithmetic();
     try std.testing.expect(!engine.valid);
 }
 

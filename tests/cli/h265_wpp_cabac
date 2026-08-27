@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Regression: H.265 CABAC false-positive WARN on WPP (entropy_coding_sync)
+# streams — witnessed 2026-08-26 on an x265 BluRay rip (Main 10, wpp, ctu=64,
+# 1920x802 → 13 CTU rows). The intra CABAC walk ignored WPP substream
+# boundaries: no end_of_subset_one_bit consumption, no byte-aligned engine
+# re-init, no per-row context sync (spec 7.3.8.1, 9.3.1, 9.3.2.2-9.3.2.5).
+# After CTU row 0 it decoded the next substream's aligned bytes as continuation
+# bits, desynced, exhausted the tiny black-frame slice mid-row → mid_slice_fail
+# → "CABAC decode anomalies" WARN on a stream ffmpeg -xerror decodes clean.
+#
+# Fixture provenance (synthetic, committed — no third-party media):
+#   ffmpeg -f lavfi -i color=black:size=1920x802:rate=24:duration=0.5 \
+#     -pix_fmt yuv420p10le -c:v libx265 \
+#     -x265-params wpp=1:ctu=64:sao=0:open-gop=1:signhide=1:crf=22:rect=1 \
+#     -tag:v hvc1 wpp_main10_black.mp4
+# This mirrors the witnessed file's coding tools and reproduced the identical
+# failure signature pre-fix (mid_slice_fail at CTU ~59/390, bits_remaining=0).
+#
+# Corrupt twin provenance: wpp_main10_black_corrupt.mp4 is the clean fixture
+# with 8 bytes at file offset 64 (inside the first WPP substream's CABAC
+# data) replaced by (b+0xA5) mod 256. The fixed decoder detects it via WPP
+# structure: the desynced row fails the substream contract (end_of_subset /
+# engine validity). ffmpeg -xerror tolerates this particular flip (garbage
+# arithmetic-coded bins decode as legal syntax) — the WPP substream walk is
+# strictly stronger than ffmpeg's error surface on this class.
+# Aggregate detection-loss evidence lives in the corruption-harness sweep
+# records, not here.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+if [[ ! -x "$VALIDATE_BIN" ]]; then
+	echo "FAIL: validate binary not found at $VALIDATE_BIN"
+	exit 1
+fi
+
+FIX="$PROJECT_ROOT/tests/fixtures/h265_wpp"
+CLEAN="$FIX/wpp_main10_black.mp4"
+CORRUPT="$FIX/wpp_main10_black_corrupt.mp4"
+
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+failures=0
+
+# Committed fixture — a miss is a real defect, not a SKIP.
+if [[ ! -f "$CLEAN" ]]; then
+	echo "FAIL: missing committed fixture $CLEAN"
+	exit 1
+fi
+
+out="$("$VALIDATE_BIN" "$CLEAN" 2>&1 | strip_ansi)"
+line="$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|WARN|UNKNOWN)' | head -1)"
+if [[ "$line" == OK* ]]; then
+	echo "PASS: clean WPP Main10 stream -> $line"
+else
+	echo "FAIL: clean WPP Main10 stream must be OK (zero CABAC anomalies), got: $line"
+	failures=$((failures + 1))
+fi
+
+# Corrupt twin: WPP substream structure broken; must NOT be OK.
+if [[ -f "$CORRUPT" ]]; then
+	out="$("$VALIDATE_BIN" "$CORRUPT" 2>&1 | strip_ansi)"
+	line="$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|WARN|UNKNOWN)' | head -1)"
+	if [[ "$line" == WARN* || "$line" == FAIL* ]]; then
+		echo "PASS: corrupt WPP stream detected -> $line"
+	else
+		echo "FAIL: corrupt WPP stream must be WARN/FAIL, got: $line"
+		failures=$((failures + 1))
+	fi
+else
+	echo "FAIL: missing committed fixture $CORRUPT"
+	failures=$((failures + 1))
+fi
+
+if (( failures > 0 )); then
+	echo "h265_wpp_cabac: $failures failure(s)"
+	exit 1
+fi
+echo "h265_wpp_cabac: all passed"

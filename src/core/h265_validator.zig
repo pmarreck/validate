@@ -1312,6 +1312,7 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     .transquant_bypass_enabled = pps.transquant_bypass_enabled_flag,
                                     .transform_skip_enabled = pps.transform_skip_enabled_flag,
                                     .tiles_enabled = pps.tiles_enabled_flag,
+                                    .entropy_coding_sync_enabled = pps.entropy_coding_sync_enabled_flag,
                                     .sign_data_hiding_enabled = pps.sign_data_hiding_enabled_flag,
                                     .slice_qp = slice_qp,
                                     .slice_sao_luma = slice_info.slice_sao_luma_flag,
@@ -1347,6 +1348,11 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                 // Clean H.265 streams on this codebase's narrow decoder commonly
                                 // exhibit (engine_valid=true, ctus_decoded < expected) — that's the
                                 // decoder bailing on an unimplemented syntax element, NOT corruption.
+                                // WPP substream boundaries are handled (2026-08-27), so a desync at
+                                // a CTU-row boundary on entropy_coding_sync streams is now a real
+                                // signal, not a parser gap. Known remaining gap: residual_coding
+                                // divergence on complex-content intra CTUs (NEXT_STEPS 4g/4h/4i)
+                                // can still surface here as mid_slice_fail on conformant streams.
                                 if (result.total_rbsp_bits > 0) {
                                     const overshoot = result.ctus_decoded > expected_ctus;
                                     const immediate_fail = !result.engine_valid and result.ctus_decoded == 0;
