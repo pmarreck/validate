@@ -119,10 +119,29 @@ local function sibling_dir(upstream_url)
 	return sibling_root .. "/" .. base:gsub("%.git$", "")
 end
 
+-- Mainline, not checkout: a sibling parked on a feature branch must not
+-- masquerade as drift (witnessed 2026-08-27: zigimg on tiff-ccitt-g4).
+-- Resolve the LOCAL branch named by origin/HEAD (unpushed mainline work
+-- still counts); fall back to the checked-out HEAD only when the clone
+-- shape gives us nothing better.
 local function sibling_head(upstream_url)
 	local dir = sibling_dir(upstream_url)
 	if not dir then return nil end
-	local out = shell_line(string.format("git -C '%s' rev-parse HEAD 2>/dev/null", dir))
+	local defref = nil
+	local p = io.popen(string.format(
+		"git -C '%s' symbolic-ref refs/remotes/origin/HEAD 2>/dev/null", dir), "r")
+	if p then
+		local line = (p:read("*a") or ""):match("refs/remotes/origin/([%w%._%-/]+)")
+		p:close()
+		defref = line
+	end
+	local out
+	if defref then
+		out = shell_line(string.format("git -C '%s' rev-parse '%s' 2>/dev/null", dir, defref))
+	end
+	if not out or #out ~= 40 then
+		out = shell_line(string.format("git -C '%s' rev-parse HEAD 2>/dev/null", dir))
+	end
 	if not out or #out ~= 40 then return nil end
 	return out, dir
 end

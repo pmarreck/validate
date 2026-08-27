@@ -11,7 +11,7 @@
             .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
         .zigimg = .{
-            .url = "git+https://github.com/pmarreck/zigimg#12e5dc934b92b2d0ef5481c1f67f1346f3a365e0",
+            .url = "git+https://github.com/pmarreck/zigimg#abf995ef76053570d54b3d355b0f8453e45fd104",
             .hash = "zigimg-0.1.0-8_eo2lO2FwC3lfMxQB9Y2FPr9vA9Y7Vunf5LjdoZ2NQB",
         },
         .libwebp = .{
@@ -75,53 +75,53 @@
             .hash = "libopenmpt-0.8.0-5ozQWN9GGQt4jdD0toz0qfceXIERnEsx5vBcUvWUg60E",
         },
         .cj5 = .{
-            .url = "git+https://github.com/pmarreck/cj5#b70941c4fe022df55a4177f696b0474ba3ef8125",
-            .hash = "cj5-1.0.0-wO-em1zcAADAeO71NFuI_Z-cmq7BT-0YSVegGQ2q8SCe",
+            .url = "git+https://github.com/pmarreck/cj5#c0f7959eb15aa78e306b6e85f8485f2c23a3dae6",
+            .hash = "cj5-1.0.0-wO-em9sCAQAoU5TrSauEDHwuTyAmCdyeghOuguiz1LfK",
         },
         // libraw removed (v1 closure, 2026-08-15): oracle-only per Peter's
         // ruling — ARW/CR2/NEF route tiffz+jpegz; vendor sensor payloads are
         // rawz milestones. darktable/rawspeed/libraw remain dev/test oracles
         // OUTSIDE the build graph.
         .z7z = .{
-            .url = "git+https://github.com/pmarreck/z7z#d495452c79d322b9691a64da4ac733a441df4de5",
+            .url = "git+https://github.com/pmarreck/z7z#e28c2290316f61738686a7e800d7bf266ef32cd2",
             .hash = "z7z-0.1.0-rkKuF6ZyCAD-5nqCC5Yp3bXxVeKoBWXDlflM2virwmOY",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/3ddbbdd89e5f7ffb088b004404a5639118755c26.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfjEGDgAOWMH1HCe89hmIuVZWnuaDk27s0puGy3V1",
+            .url = "https://github.com/pmarreck/rarz/archive/9432e36af0e64f2a0d643ab99b992065aa862e0b.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfoswDgCyg-QOlbHJIKrCgV-YZHCf57nzlqiEIsxP",
         },
         .bzip2z = .{
-            .url = "https://github.com/pmarreck/bzip2z/archive/9b9e28dafb8dc3d34a88d43b7359b6ca9efd78f1.tar.gz",
-            .hash = "bzip2z-0.1.0-m5NdlsYYCACrnvOCZyqsVmJYY84BRf1XPFi08RfbnWPW",
+            .url = "https://github.com/pmarreck/bzip2z/archive/6113a10a9073c4076a5be5409868b1c868192b38.tar.gz",
+            .hash = "bzip2z-0.1.0-m5NdluccCAAHOlMkmGvJHFqYCFjK6KlL6qSL3UDrirUY",
         },
         .zstdz = .{
             .url = "https://github.com/pmarreck/zstdz/archive/46a916ab3bb24c2298f1559a1b36691caab53ffa.tar.gz",
             .hash = "zstdz-1.6.0-yDWjzjJvNADuXVquo1ire6azJM7pPcP-DIqOXWGsLr6G",
         },
         .par2z = .{
-            .url = "https://github.com/pmarreck/par2z/archive/6c97a8e7d60067f81001afe7634836c2cb2c10ab.tar.gz",
-            .hash = "par2z-0.1.0-KhX3fThrBgCWLRmns254lM9DMuqkaJwurDz84iqeU3fb",
+            .url = "https://github.com/pmarreck/par2z/archive/4c64ea58e1d15499da64032533aca5ba99c86452.tar.gz",
+            .hash = "par2z-0.1.0-KhX3fS-UBgDiIdW_pgUVBGEtVjaLax4OTN2_GtMpw6fE",
         },
         .uchardetz = .{
-            .url = "https://github.com/pmarreck/uchardetz/archive/10cb89fae7882b46fdfecfd4aa2751989d1e9aab.tar.gz",
+            .url = "https://github.com/pmarreck/uchardetz/archive/abacfc1fc86ef7618547d7dce7cc7501e756fa31.tar.gz",
             .hash = "uchardetz-0.0.6-koAyw7pFCwAzXYaKhsirPcnwf7wfPYm8B8UCRkNc2WbD",
         },
         .compact_pro = .{
-            .url = "https://github.com/pmarreck/compact_pro/archive/813ef896c4b1b145e7c0b461a4f87301b0a2c6db.tar.gz",
-            .hash = "compact_pro-0.1.0-G2wo9UzmAgD8tLdmff1PI_Vj6N0pip0SWSi9oAfGeOMa",
+            .url = "https://github.com/pmarreck/compact_pro/archive/220ca5d11dcbc0e8aa1e66ed79a0dfd44ec4f635.tar.gz",
+            .hash = "compact_pro-0.1.0-G2wo9VACAwB2BTqF8EJ2L3sYaWQMKL3yyAXAFkiqdEKB",
         },
         .progrez = .{
-            .url = "git+https://github.com/pmarreck/progrez#7d70ce836108b761ffbeb6f2d4908a5fb9506ca6",
-            .hash = "progrez-0.1.0-0YJXrpMFAgARHkoD6RpFfS8kNgQEiYNu2ZbswsuBm2hf",
+            .url = "git+https://github.com/pmarreck/progrez#9f7cc53d6ecdf216d15fe8dd8327b00fc240ec09",
+            .hash = "progrez-0.1.0-0YJXrvcHAgCLC8LMnQUppHj9fowlnE7I0EQo4-hHwb3n",
         },
         .blip = .{
-            .url = "git+https://github.com/pmarreck/BLIP#2855eb88743b505bd3c90df8e0b7857cc305cb42",
-            .hash = "blip-0.1.0-rcNuGAOaBwC6_peTLnpRQWj7CBmiSqsMuItS6C4at5ED",
+            .url = "git+https://github.com/pmarreck/BLIP#6920b1b7fb91ef514800b345d207686d819fb699",
+            .hash = "blip-0.1.0-rcNuGKNnCAAFg3adS7Roo6GOnNI4w8DS26xCvxrMO-vH",
         },
         // mini_blar extracted from BLIP to its own repo; consume its module directly.
         .mini_blar = .{
-            .url = "git+https://github.com/pmarreck/mini_blar#e1dd0b8f30bfbb4281af3fcdc794a10b77a7bd34",
-            .hash = "mini_blar-3.0.0-3792nNzwAQD17kS0jQfrf-IQ9Z8qfQ-kj2mdEBPlOWuu",
+            .url = "git+https://github.com/pmarreck/mini_blar#ca1473904742dfea8e7eefd975b8dc44cd51b198",
+            .hash = "mini_blar-3.0.0-3792nOFeAgCdA9UADKyGkKb-2Yi6B36ZymPU8Opd2wYh",
         },
         // tiffz: cleanroom pure-Zig TIFF / DNG / NEF / NRW / CR2 / ARW
         // structural validator. Owns the jpegz pin and re-exports it as
@@ -131,7 +131,7 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#ac381e6420c6ec91981bafce9b0123cfc8f3d5d1",
+            .url = "git+https://github.com/pmarreck/tiffz#29e71e55216bba67e1432defdbc9877c070db918",
             .hash = "tiffz-0.1.0-qutJATqqzwEUrMNfzSQrfaGeDHSUxklBWRtgExdg63eN",
         },
         // rawz: proprietary camera-RAW vendor semantics (PEF private Huffman,
@@ -140,7 +140,7 @@
         // rawz's docs/validate_integration.md); rawz's own tiffz pin is
         // bypassed at module level and only fetched in the FOD.
         .rawz = .{
-            .url = "https://github.com/pmarreck/rawz/archive/2d030cf71075f5e126e07eaa2ad0c1377798b946.tar.gz",
+            .url = "https://github.com/pmarreck/rawz/archive/3d84a1a08e7ec41b0870ebcbaaa8a961d3f51599.tar.gz",
             .hash = "rawz-0.1.0-sAg3Opc2AQByM2uPDUcILtbUC0hqym4oFQnXet4xu8CJ",
         },
         .wavpack_src = .{

@@ -217,7 +217,28 @@ out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver3" VALIDATE_SIBLING_ROOT="$s
 printf '%s' "$out" | grep -Eq "SIBLING BEHIND|sibling.*behind|needs a pull" \
 	|| fail "pin-ahead case must advise the sibling needs a pull: $out"
 
-# --- 7. all-fresh zon: exit 0, silent on stdout success path ---------------
+# --- 7. sibling on a FEATURE BRANCH: mainline is the oracle, not HEAD ------
+# Sibling's default branch (what origin/HEAD names) matches the pin, but a
+# checked-out feature branch is one commit ahead. The dep must classify
+# FRESH — side branches are not mainline drift. (Witnessed live 2026-08-27:
+# zigimg on tiff-ccitt-g4 wrongly flagged the fresh pin stale.)
+sib3="$work/siblings3"; mkdir -p "$sib3"
+git -C "$sib3" init -q -b yolo featrepo
+git -C "$sib3/featrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m main1
+main_head="$(git -C "$sib3/featrepo" rev-parse HEAD)"
+# Simulate a clone shape: origin/HEAD symref names yolo.
+git -C "$sib3/featrepo" update-ref refs/remotes/origin/yolo "$main_head"
+git -C "$sib3/featrepo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/yolo
+git -C "$sib3/featrepo" checkout -q -b feature-x
+git -C "$sib3/featrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m feat1
+mkzon "$work/feat.zon" "$main_head"
+sed -i "s/aheadrepo/featrepo/g" "$work/feat.zon"
+out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver3" VALIDATE_SIBLING_ROOT="$sib3" \
+	"$CHECK" --zon "$work/feat.zon" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "feature-branch checkout must not mark mainline pin stale (got $rc): $out"
+if printf '%s' "$out" | grep -Eq "STALE.*featrepo"; then fail "featrepo wrongly stale: $out"; fi
+
+# --- 8. all-fresh zon: exit 0, silent on stdout success path ---------------
 cat > "$work/fresh.zon" <<EOF
 .{
     .name = .synthetic,
