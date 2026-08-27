@@ -113,7 +113,32 @@ at the bottom. Older completed sections were rolled up — full history lives in
       downgraded to post-freeze (GUI interim lercz link documented;
       tiffz still unresponsive, re-pinged 2026-08-26).
 
-- [ ] **EOD 2026-08-27 status of the coverage rulings (pushed @ 39d738e11):**
+- [x] **Dependency freshness gate + fleet pin sweep (Peter, 2026-08-27
+      afternoon; final push 3056709fd):** ./build and ./build_all fail on
+      any build.zig.zon pin behind upstream unless VALIDATE_ALLOW_STALE is
+      truthy (unmissable red advisory requiring Peter's authorization;
+      advisory, not hard control). Oracle: sibling-first with ancestry
+      disambiguation (unpushed mainline counts; a feature-branch checkout
+      does not — witnessed on zigimg/tiff-ccitt-g4; SIBLING BEHIND
+      needs-a-pull advisory for stale checkouts), VALIDATE_DEP_ORACLE=
+      remote-first for checkout-less machines with the Internet-
+      unavailable local fallback there; frozen list for policy-pinned
+      third-party deps; unreachable/unpinned are advisory. Gated by
+      tests/cli/dep_freshness (classifier over mixed dep sets, injected
+      resolver, offline). Peter-authorized sweep #1 re-pinned all 13
+      stale deps; the gate then caught THREE more same-evening drifts
+      (rarz 80ec687 → honest -hp verdict wired with committed fixture +
+      the 8GiB RAR7 dict budget note; tiffz 9ea64ff5 = tiffz ADOPTING
+      the gate; and its own HOME-unset crash in the --ignore-env test
+      shell). rarz two-phase admission (open headers, budget max_dict
+      pre-decode) upgraded to concrete follow-up with the 8GiB numbers.
+      Chain ask outstanding: tiffz to propagate libjxlz 4cb13298
+      (feature-naming ABI) via jpegz. Completed 2026-08-27 18:45 EDT.
+      Curiosity poke: gate frequency vs fleet velocity means most builds
+      the morning after a busy day start blocked — consider a
+      same-day-grace or auto-sweep helper if the friction annoys Peter.
+
+- [x] **EOD 2026-08-27 status of the coverage rulings (pushed @ 39d738e11):**
       LANDED today: tiffz ac381e64 (LERC+zstd link closure owned by the
       installed archive, consumer regression tests/cli/lerc_link_closure;
       CR2 deep with code-16 WARN, matrix row partial->deep mechanically);
