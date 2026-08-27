@@ -1152,6 +1152,68 @@ pub const MalformationType = enum {
     }
 };
 
+/// One named malformation finding with an optional absolute byte offset into
+/// the file. `offset` is null for positionless findings (e.g.
+/// extension_mismatch) — offsets are never fabricated. For chunk/stream
+/// findings the offset points at the first byte of the malformed chunk or
+/// stream. `detail` is an optional static token refining the finding (e.g. a
+/// specific unsupported feature name); static strings only, never allocated.
+pub const MalformationRecord = struct {
+    kind: MalformationType,
+    offset: ?u64 = null,
+    detail: ?[]const u8 = null,
+};
+
+/// Bounded, ordered list of malformation findings. Fixed capacity keeps a
+/// pathological file (e.g. thousands of bad ancillary chunks) from ballooning
+/// results; findings beyond capacity are counted in `overflow`, never
+/// silently dropped. Sites without position state may keep inserting into the
+/// plain EnumSet — `ValidationResult.syncMalformationRecords` backfills a
+/// positionless record for every set type at the FFI boundary.
+pub const MalformationRecords = struct {
+    pub const capacity = 16;
+    items: [capacity]MalformationRecord = [_]MalformationRecord{.{ .kind = .extension_mismatch }} ** capacity,
+    len: u8 = 0,
+    overflow: u32 = 0,
+
+    pub fn append(self: *MalformationRecords, kind: MalformationType, offset: ?u64) void {
+        self.appendRecord(.{ .kind = kind, .offset = offset });
+    }
+
+    pub fn appendRecord(self: *MalformationRecords, record: MalformationRecord) void {
+        if (self.len >= capacity) {
+            self.overflow += 1;
+            return;
+        }
+        self.items[self.len] = record;
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const MalformationRecords) []const MalformationRecord {
+        return self.items[0..self.len];
+    }
+
+    /// Total findings observed, including those beyond the record cap.
+    pub fn total(self: *const MalformationRecords) u32 {
+        return @as(u32, self.len) + self.overflow;
+    }
+
+    pub fn containsKind(self: *const MalformationRecords, kind: MalformationType) bool {
+        for (self.slice()) |rec| {
+            if (rec.kind == kind) return true;
+        }
+        return false;
+    }
+
+    /// Merge `other`'s records in order, skipping kinds already present
+    /// (the same finding re-detected by another pass must not duplicate).
+    pub fn mergeFrom(self: *MalformationRecords, other: *const MalformationRecords) void {
+        for (other.slice()) |rec| {
+            if (!self.containsKind(rec.kind)) self.appendRecord(rec);
+        }
+    }
+};
+
 /// Symbolic error code for structured error reporting (i18n, FFI).
 /// Each variant maps 1:1 to an error_messages.zig template.
 pub const ValidationErrorCode = enum(u8) {
@@ -1306,9 +1368,26 @@ pub const ValidationResult = struct {
     /// Set of tolerable malformations (for potential repair). Search "REPAIRABLE" for handling code.
     /// Empty set = no malformations. Use .insert() to add, .contains() to check, .iterator() to list.
     malformations: std.EnumSet(MalformationType) = .{},
+    /// Ordered, bounded record list naming each malformation with an optional
+    /// byte offset (null when positionless). Kept alongside the EnumSet: the
+    /// set answers "does this file have X?", the records answer "what exactly
+    /// was found, and where". See syncMalformationRecords for the invariant.
+    malformation_records: MalformationRecords = .{},
     /// Informational warning message (not a repairable malformation, just a note).
     /// Examples: "DTD not validated", "contains comments", "large file - partial validation".
     warning_message: ?[]const u8 = null,
+    /// Absolute byte offset tied to warning_message when the producing
+    /// validator knows one (e.g. JPEG XL strict findings). Null when
+    /// positionless — never fabricated.
+    warning_offset: ?u64 = null,
+    /// Whether warning_offset is exact, or a host-container approximation
+    /// (e.g. a decoded-stream coordinate a preprocessing filter prevents
+    /// mapping to a raw file byte).
+    warning_offset_is_exact: bool = false,
+    /// Optional static token refining warning_message (e.g. the specific
+    /// unsupported feature name once the decoder surfaces it). Static
+    /// strings only, never allocated or localized.
+    warning_detail: ?[]const u8 = null,
     /// Informational annotation about a noteworthy property of a VALID file
     /// (not a deviation, not a malformation — an observation worth surfacing).
     /// When set on an otherwise-OK result, the verdict is INFO. Examples:
@@ -1346,6 +1425,34 @@ pub const ValidationResult = struct {
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
         return self.malformations.count() > 0;
+    }
+
+    /// Record a named malformation finding: inserts into the EnumSet AND
+    /// appends an ordered record carrying the byte offset (null when the
+    /// emission site has no position state — never fabricate one).
+    pub fn noteMalformation(self: *ValidationResult, kind: MalformationType, offset: ?u64) void {
+        self.malformations.insert(kind);
+        self.malformation_records.append(kind, offset);
+    }
+
+    /// Same as noteMalformation but carries a full record (offset + detail).
+    pub fn noteMalformationRecord(self: *ValidationResult, record: MalformationRecord) void {
+        self.malformations.insert(record.kind);
+        self.malformation_records.appendRecord(record);
+    }
+
+    /// Enforce the wire invariant "every EnumSet member has at least one
+    /// record": backfill a positionless record for any malformation type that
+    /// was inserted directly into the set by a site without position state.
+    /// Called at the FFI result-building boundary so consumers always see
+    /// named records regardless of which insertion style a validator used.
+    pub fn syncMalformationRecords(self: *ValidationResult) void {
+        var iter = self.malformations.iterator();
+        while (iter.next()) |kind| {
+            if (!self.malformation_records.containsKind(kind)) {
+                self.malformation_records.append(kind, null);
+            }
+        }
     }
 
     /// Get the first malformation description (for simple single-warning display)
@@ -1449,7 +1556,7 @@ pub const ValidationResult = struct {
             .is_valid = true,
             .error_message = null,
         };
-        result.malformations.insert(malformation);
+        result.noteMalformation(malformation, null);
         return result;
     }
 
@@ -1461,7 +1568,7 @@ pub const ValidationResult = struct {
             .error_message = null,
             .validation_depth = cappedDepth(format, depth),
         };
-        result.malformations.insert(malformation);
+        result.noteMalformation(malformation, null);
         return result;
     }
 
@@ -6170,6 +6277,7 @@ pub const FormatValidator = struct {
             } else {
                 // Preserve malformations and format from structural validation
                 const structural_malformations = result.malformations;
+                const structural_records = result.malformation_records;
                 const structural_format = result.format;
                 // Reuse the structural descriptor. POSIX keeps its mmap fast
                 // path; a fallback remains borrowed file I/O and never opens
@@ -6194,6 +6302,8 @@ pub const FormatValidator = struct {
                 while (iter.next()) |m| {
                     result.malformations.insert(m);
                 }
+                // Records ride along with their offsets (deduped by kind).
+                result.malformation_records.mergeFrom(&structural_records);
             }
         }
 
@@ -9549,4 +9659,35 @@ test "AppleDouble sidecar inherits any host extension — never extension-mismat
 	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .unknown));
 	// Sanity: an unrelated mismatch still surfaces.
 	try std.testing.expect(!isFormatCompatibleWithExtension(.jpeg, .pdf));
+}
+
+test "MalformationRecords bounds findings and counts overflow" {
+	var recs: MalformationRecords = .{};
+	var i: u64 = 0;
+	while (i < MalformationRecords.capacity + 5) : (i += 1) {
+		recs.append(.png_ancillary_crc_error, i * 100);
+	}
+	try std.testing.expectEqual(@as(u8, MalformationRecords.capacity), recs.len);
+	try std.testing.expectEqual(@as(u32, 5), recs.overflow);
+	try std.testing.expectEqual(@as(u32, MalformationRecords.capacity + 5), recs.total());
+	try std.testing.expectEqual(@as(?u64, 0), recs.slice()[0].offset);
+	try std.testing.expectEqual(@as(?u64, 1500), recs.slice()[15].offset);
+}
+
+test "syncMalformationRecords backfills positionless records for bare EnumSet inserts" {
+	var result = ValidationResult.ok(.png);
+	// A site with position state uses noteMalformation...
+	result.noteMalformation(.png_ancillary_crc_error, 33);
+	// ...while a legacy site inserts directly into the set.
+	result.malformations.insert(.extension_mismatch);
+	result.syncMalformationRecords();
+	const recs = result.malformation_records.slice();
+	try std.testing.expectEqual(@as(usize, 2), recs.len);
+	try std.testing.expectEqual(MalformationType.png_ancillary_crc_error, recs[0].kind);
+	try std.testing.expectEqual(@as(?u64, 33), recs[0].offset);
+	try std.testing.expectEqual(MalformationType.extension_mismatch, recs[1].kind);
+	try std.testing.expectEqual(@as(?u64, null), recs[1].offset);
+	// Idempotent: a second sync adds nothing.
+	result.syncMalformationRecords();
+	try std.testing.expectEqual(@as(usize, 2), result.malformation_records.slice().len);
 }

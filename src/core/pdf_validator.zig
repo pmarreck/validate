@@ -61,6 +61,9 @@ pub const PdfImageFailureDisposition = enum {
 
 pub const PdfImageTolerance = struct {
 	malformations: std.EnumSet(MalformationType),
+	/// Ordered records naming each tolerated failure with the absolute PDF
+	/// byte offset of the failing image stream when the walk knew it.
+	records: format_validation.MalformationRecords = .{},
 	warning: []const u8,
     disposition: PdfImageFailureDisposition,
 };
@@ -92,6 +95,7 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 	if (result.failed_images == 0) return null;
 
 	var malformations: std.EnumSet(MalformationType) = .{};
+	var records: format_validation.MalformationRecords = .{};
 	var first_warning: ?[]const u8 = null;
     var all_failures_reader_recoverable = true;
 
@@ -163,6 +167,8 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 
 		if (malformation_type) |mt| {
 			malformations.insert(mt);
+			// Stream byte offset when the image walk carried one; never fabricated.
+			records.append(mt, if (res.stream_start) |s| @as(u64, s) else null);
 		} else {
 			// Unknown error type - fail validation
 			return null;
@@ -180,6 +186,7 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 
 	return .{
 		.malformations = malformations,
+		.records = records,
 		.warning = first_warning orelse "Embedded images failed strict validation; accepted with warning",
         .disposition = if (all_failures_reader_recoverable) .warn else .strict_failure,
 	};
@@ -222,6 +229,7 @@ pub fn validatePdfWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
 	// Tiered search for %%EOF: try small window first (fast path), expand if needed
 	const eof_marker = "%%EOF";
 	var malformations_local: std.EnumSet(MalformationType) = .{};
+	var records_local: format_validation.MalformationRecords = .{};
 	var buffer: [8192]u8 = undefined;
 	var bytes_read: usize = 0;
 
@@ -259,10 +267,12 @@ pub fn validatePdfWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
 	const after_eof_start = eof_pos.? + eof_marker.len;
 	if (after_eof_start < bytes_read) {
 		const after_eof = buffer[after_eof_start..bytes_read];
-		for (after_eof) |c| {
+		for (after_eof, 0..) |c, gi| {
 			if (c != ' ' and c != '\t' and c != '\n' and c != '\r' and c != 0) {
-				// Garbage after EOF - tolerable but warn
+				// Garbage after EOF - tolerable but warn. Offset = absolute
+				// position of the first non-whitespace byte after %%EOF.
 				malformations_local.insert(.pdf_garbage_after_eof);
+				records_local.append(.pdf_garbage_after_eof, search_start + after_eof_start + gi);
 				break;
 			}
 		}
@@ -277,6 +287,7 @@ pub fn validatePdfWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 			.validation_depth = .structural,
 			.has_encrypted_content = true,
 		};
@@ -288,6 +299,7 @@ pub fn validatePdfWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 		};
 	}
 	return ValidationResult.ok(.pdf);
@@ -386,6 +398,9 @@ const FlateCheckOutcome = struct {
 	tolerated_malformation: bool = false,
 	/// Warning suitable for surfacing in tolerant mode.
 	tolerated_warning: ?[]const u8 = null,
+	/// Absolute byte offset of the first failing FlateDecode stream, when
+	/// the residual sweep identified one (tolerant mode). Null otherwise.
+	tolerated_failure_offset: ?u64 = null,
 	/// Informational note suitable for INFO surfacing — set when the residual
 	/// FlateDecode sweep skipped streams it could not validate (e.g. encrypted
 	/// PDF where bytes are post-encryption). Honors the project "no silent
@@ -460,6 +475,7 @@ fn applyFlateStreamCheck(
 		return .{
 			.tolerated_malformation = true,
 			.tolerated_warning = reason_str,
+			.tolerated_failure_offset = if (res.first_failure) |f| @as(u64, f.stream_start) else null,
 		};
 	}
 	return .{ .hard_fail_message = reason_str };
@@ -482,6 +498,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	// Tiered search for %%EOF: try small window first (fast path), expand if needed
 	const eof_marker = "%%EOF";
 	var malformations_local: std.EnumSet(MalformationType) = .{};
+	var records_local: format_validation.MalformationRecords = .{};
 	var warning_message: ?[]const u8 = null;
 	var info_message: ?[]const u8 = null;
 	var buffer: [8192]u8 = undefined;
@@ -523,9 +540,10 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	const after_eof_start = eof_pos.? + eof_marker.len;
 	if (after_eof_start < bytes_read) {
 		const after_eof = trailer_data[after_eof_start..];
-		for (after_eof) |c| {
+		for (after_eof, 0..) |c, gi| {
 			if (c != ' ' and c != '\t' and c != '\n' and c != '\r' and c != 0) {
 				malformations_local.insert(.pdf_garbage_after_eof);
+				records_local.append(.pdf_garbage_after_eof, search_start + after_eof_start + gi);
 				break;
 			}
 		}
@@ -652,6 +670,8 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			while (iter.next()) |m| {
 				malformations_local.insert(m);
 			}
+			// Records carry the per-stream byte offsets (deduped by kind).
+			records_local.mergeFrom(&tolerated.records);
 			if (warning_message == null) {
 				warning_message = tolerated.warning;
 			}
@@ -724,6 +744,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	}
 	if (flate_outcome.tolerated_malformation) {
 		malformations_local.insert(.pdf_flate_decode_failed);
+		records_local.append(.pdf_flate_decode_failed, flate_outcome.tolerated_failure_offset);
 		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
 	}
 	if (flate_outcome.skip_info_message) |info| {
@@ -752,6 +773,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 			.warning_message = warning_message,
 			.info_message = info_message,
 			.validation_depth = final_depth,
@@ -765,6 +787,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 			.warning_message = warning_message,
 			.info_message = info_message,
 			.validation_depth = final_depth,
@@ -798,6 +821,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	}
 
 	var malformations_local: std.EnumSet(MalformationType) = .{};
+	var records_local: format_validation.MalformationRecords = .{};
 	var warning_message: ?[]const u8 = null;
 	var info_message: ?[]const u8 = null;
 
@@ -814,9 +838,10 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	const after_eof_start = eof_pos.? + eof_marker.len;
 	if (after_eof_start < pdf_data.len) {
 		const after_eof = pdf_data[after_eof_start..];
-		for (after_eof) |c| {
+		for (after_eof, 0..) |c, gi| {
 			if (c != ' ' and c != '\t' and c != '\n' and c != '\r' and c != 0) {
 				malformations_local.insert(.pdf_garbage_after_eof);
+				records_local.append(.pdf_garbage_after_eof, after_eof_start + gi);
 				break;
 			}
 		}
@@ -872,6 +897,8 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			while (iter.next()) |m| {
 				malformations_local.insert(m);
 			}
+			// Records carry the per-stream byte offsets (deduped by kind).
+			records_local.mergeFrom(&tolerated.records);
 			if (warning_message == null) {
 				warning_message = tolerated.warning;
 			}
@@ -919,6 +946,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	}
 	if (flate_outcome.tolerated_malformation) {
 		malformations_local.insert(.pdf_flate_decode_failed);
+		records_local.append(.pdf_flate_decode_failed, flate_outcome.tolerated_failure_offset);
 		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
 	}
 	if (flate_outcome.skip_info_message) |info| {
@@ -955,6 +983,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 			.warning_message = warning_message,
 			.info_message = info_message,
 			.validation_depth = final_depth,
@@ -969,6 +998,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.is_valid = true,
 			.error_message = null,
 			.malformations = malformations_local,
+			.malformation_records = records_local,
 			.warning_message = warning_message,
 			.info_message = info_message,
 			.validation_depth = final_depth,
@@ -1274,4 +1304,45 @@ test "FormatValidator detects MIME-wrapped PDF and warns loudly" {
     try std.testing.expect(result.malformations.contains(.mime_wrapped_content));
     // Should have at least one malformation
     try std.testing.expect(result.hasMalformations());
+}
+
+test "validatePdf records garbage-after-EOF with byte offset" {
+	const pdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\nGARBAGE";
+	var source = FileSource.fromBuffer(pdf);
+	defer source.close();
+	const result = validatePdf(&source);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expect(result.malformations.contains(.pdf_garbage_after_eof));
+	const recs = result.malformation_records.slice();
+	try std.testing.expectEqual(@as(usize, 1), recs.len);
+	try std.testing.expectEqual(MalformationType.pdf_garbage_after_eof, recs[0].kind);
+	const expected_off: u64 = std.mem.indexOf(u8, pdf, "GARBAGE").?;
+	try std.testing.expectEqual(@as(?u64, expected_off), recs[0].offset);
+}
+
+test "toleratedPdfImageFailures carries stream byte offsets into records" {
+	const results = [_]pdf_image_validator.ImageValidationResult{.{
+		.object_num = 7,
+		.filter = .dct_decode,
+		.valid = false,
+		.error_message = "Truncated JPEG data",
+		.width = 0,
+		.height = 0,
+		.stream_start = 1234,
+	}};
+	const image_result = pdf_image_validator.PdfImageValidationResult{
+		.valid = false,
+		.total_images = 1,
+		.validated_images = 0,
+		.failed_images = 1,
+		.skipped_images = 0,
+		.results = &results,
+		.error_message = null,
+	};
+	const tolerated = toleratedPdfImageFailures(image_result).?;
+	try std.testing.expect(tolerated.malformations.contains(.pdf_dct_truncated));
+	const recs = tolerated.records.slice();
+	try std.testing.expectEqual(@as(usize, 1), recs.len);
+	try std.testing.expectEqual(MalformationType.pdf_dct_truncated, recs[0].kind);
+	try std.testing.expectEqual(@as(?u64, 1234), recs[0].offset);
 }

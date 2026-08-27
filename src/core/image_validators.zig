@@ -3236,7 +3236,10 @@ fn mapJxlValidationResult(result: jxl_validator.JxlValidationResult, is_large_fi
                 return ValidationResult.okWithDepthAndWarning(.jxl, .full, "Large image file (>200MB)");
             }
             if (result.warning_message) |warning| {
-                return ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
+                var mapped = ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
+                mapped.warning_offset = result.host_byte_offset orelse result.byte_offset;
+                mapped.warning_offset_is_exact = result.offset_is_exact;
+                return mapped;
             }
             return ValidationResult.okWithDepth(.jxl, .full);
         },
@@ -3253,6 +3256,10 @@ fn mapJxlValidationResult(result: jxl_validator.JxlValidationResult, is_large_fi
             );
             mapped.verdict = .indeterminate;
             mapped.validation_unsupported = true;
+            // Carry the strict finding's byte coordinate through the adapter
+            // (host-absolute preferred; codestream-relative fallback).
+            mapped.warning_offset = result.host_byte_offset orelse result.byte_offset;
+            mapped.warning_offset_is_exact = result.offset_is_exact;
             return mapped;
         },
         .indeterminate => {
@@ -3262,6 +3269,8 @@ fn mapJxlValidationResult(result: jxl_validator.JxlValidationResult, is_large_fi
                 result.warning_message orelse "JPEG XL validation was incomplete",
             );
             mapped.verdict = .indeterminate;
+            mapped.warning_offset = result.host_byte_offset orelse result.byte_offset;
+            mapped.warning_offset_is_exact = result.offset_is_exact;
             return mapped;
         },
     }
@@ -3567,9 +3576,13 @@ pub fn validatePngDeep(allocator: Allocator, source: *FileSource) ValidationResu
     var chunk_count: usize = 0;
     const max_chunk_size: u32 = 128 * 1024 * 1024; // 128 MiB max chunk
 
-    // Track ancillary CRC errors - tolerable but we warn about them
-    // REPAIRABLE: png_ancillary_crc_error - can be fixed by recalculating CRCs
-    var has_ancillary_crc_error = false;
+    // Track ancillary CRC errors - tolerable but we warn about them.
+    // REPAIRABLE: png_ancillary_crc_error - can be fixed by recalculating CRCs.
+    // Each error is recorded with the absolute byte offset of the offending
+    // chunk (its 4-byte length field), bounded by MalformationRecords.capacity.
+    var crc_error_records: format_validation.MalformationRecords = .{};
+    // Absolute offset of the current chunk start; signature is 8 bytes.
+    var chunk_start: u64 = 8;
 
     // Allocate read buffer once, reused across all chunks
     const read_buffer = allocator.alloc(u8, 65536) catch {
@@ -3642,7 +3655,7 @@ pub fn validatePngDeep(allocator: Allocator, source: *FileSource) ValidationResu
             const is_ancillary = (chunk_type[0] & 0x20) != 0;
             if (is_ancillary) {
                 // Tolerate CRC error in ancillary chunk - image still viewable
-                has_ancillary_crc_error = true;
+                crc_error_records.append(.png_ancillary_crc_error, chunk_start);
             } else {
                 // Critical chunk CRC error - image may be corrupted
                 return ValidationResult.invalidCodeMsgWithDepth(.png, .checksum_mismatch, "CRC", "CRC mismatch in critical chunk", .full);
@@ -3650,6 +3663,7 @@ pub fn validatePngDeep(allocator: Allocator, source: *FileSource) ValidationResu
         }
 
         chunk_count += 1;
+        chunk_start += 12 + @as(u64, chunk_length); // length+type+CRC framing is 12 bytes
 
         // Check for IEND (end of PNG)
         if (std.mem.eql(u8, chunk_type, "IEND")) {
@@ -3667,8 +3681,11 @@ pub fn validatePngDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
 
     // Return with warning if ancillary CRC errors were found
-    if (has_ancillary_crc_error) {
-        return ValidationResult.okWithDepthAndMalformation(.png, .full, .png_ancillary_crc_error);
+    if (crc_error_records.total() > 0) {
+        var result = ValidationResult.okWithDepth(.png, .full);
+        result.malformations.insert(.png_ancillary_crc_error);
+        result.malformation_records = crc_error_records;
+        return result;
     }
     return ValidationResult.okWithDepth(.png, .full);
 }
@@ -5610,6 +5627,76 @@ test "validatePngDeep accepts valid PNG from ground truth" {
     try testing.expectEqual(FileFormat.png, result.format);
 }
 
+/// Test helper: write one PNG chunk (length+type+data+CRC) at `pos`, optionally
+/// corrupting the stored CRC. Returns the position after the chunk.
+fn writePngChunkForTest(buf: []u8, pos: usize, chunk_type: *const [4]u8, chunk_data: []const u8, corrupt_crc: bool) usize {
+    std.mem.writeInt(u32, buf[pos..][0..4], @intCast(chunk_data.len), .big);
+    @memcpy(buf[pos + 4 ..][0..4], chunk_type);
+    @memcpy(buf[pos + 8 ..][0..chunk_data.len], chunk_data);
+    var crc = std.hash.Crc32.init();
+    crc.update(chunk_type);
+    crc.update(chunk_data);
+    var v = crc.final();
+    if (corrupt_crc) v ^= 0xFF;
+    std.mem.writeInt(u32, buf[pos + 8 + chunk_data.len ..][0..4], v, .big);
+    return pos + 12 + chunk_data.len;
+}
+
+test "validatePngDeep records ancillary CRC error with chunk byte offset" {
+    const allocator = testing.allocator;
+    // Minimal PNG: sig(8) + IHDR(25) + tEXt(15, corrupt CRC) + IDAT(25) + IEND(12)
+    var data: [128]u8 = undefined;
+    const sig = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    @memcpy(data[0..8], &sig);
+    var pos: usize = 8;
+    // IHDR: 1x1, 8-bit grayscale
+    pos = writePngChunkForTest(&data, pos, "IHDR", &[_]u8{ 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0 }, false);
+    const text_chunk_offset = pos; // 8 + (12+13) = 33
+    try testing.expectEqual(@as(usize, 33), text_chunk_offset);
+    pos = writePngChunkForTest(&data, pos, "tEXt", "k\x00v", true); // ancillary, corrupt CRC
+    // IDAT: stored-deflate zlib stream for one 2-byte scanline (filter 0 + pixel 0)
+    pos = writePngChunkForTest(&data, pos, "IDAT", &[_]u8{ 0x78, 0x01, 0x01, 0x02, 0x00, 0xFD, 0xFF, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01 }, false);
+    pos = writePngChunkForTest(&data, pos, "IEND", "", false);
+
+    var source = FileSource.fromBuffer(data[0..pos]);
+    defer source.close();
+    const result = validatePngDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.malformations.contains(.png_ancillary_crc_error));
+    const recs = result.malformation_records.slice();
+    try testing.expectEqual(@as(usize, 1), recs.len);
+    try testing.expectEqual(MalformationType.png_ancillary_crc_error, recs[0].kind);
+    try testing.expectEqual(@as(?u64, @as(u64, text_chunk_offset)), recs[0].offset);
+}
+
+test "validatePngDeep caps runaway ancillary CRC records and counts overflow" {
+    const allocator = testing.allocator;
+    // 20 corrupt ancillary chunks — 4 beyond the record cap of 16.
+    var data: [1024]u8 = undefined;
+    const sig = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    @memcpy(data[0..8], &sig);
+    var pos: usize = 8;
+    pos = writePngChunkForTest(&data, pos, "IHDR", &[_]u8{ 0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0 }, false);
+    var i: usize = 0;
+    while (i < 20) : (i += 1) {
+        pos = writePngChunkForTest(&data, pos, "tEXt", "k\x00v", true);
+    }
+    pos = writePngChunkForTest(&data, pos, "IDAT", &[_]u8{ 0x78, 0x01, 0x01, 0x02, 0x00, 0xFD, 0xFF, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01 }, false);
+    pos = writePngChunkForTest(&data, pos, "IEND", "", false);
+
+    var source = FileSource.fromBuffer(data[0..pos]);
+    defer source.close();
+    const result = validatePngDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    const recs = result.malformation_records;
+    try testing.expectEqual(@as(u8, 16), recs.len);
+    try testing.expectEqual(@as(u32, 4), recs.overflow);
+    try testing.expectEqual(@as(u32, 20), recs.total());
+    // First record sits right after IHDR; each tEXt chunk is 15 bytes.
+    try testing.expectEqual(@as(?u64, 33), recs.slice()[0].offset);
+    try testing.expectEqual(@as(?u64, 33 + 15), recs.slice()[1].offset);
+}
+
 // ---- JPEG ----
 
 test "validateJpeg accepts valid JPEG from ground truth" {
@@ -5953,10 +6040,16 @@ test "libjxlz unsupported and indeterminate outcomes remain non-corrupt" {
         .finding_code = .unsupported_feature,
         .error_message = null,
         .warning_message = "unsupported test feature",
+        .host_byte_offset = 4242,
+        .offset_is_exact = true,
     }, false);
     try testing.expect(unsupported.is_valid);
     try testing.expectEqual(format_validation.ResultVerdict.indeterminate, unsupported.verdict);
     try testing.expect(unsupported.validation_unsupported);
+    // The finding offset must survive the adapter flattening (2026-08-27
+    // coordinator ruling: offsets were dying in mapStrictResult adapters).
+    try testing.expectEqual(@as(?u64, 4242), unsupported.warning_offset);
+    try testing.expect(unsupported.warning_offset_is_exact);
 
     const incomplete = mapJxlValidationResult(.{
         .valid = true,
@@ -5965,10 +6058,13 @@ test "libjxlz unsupported and indeterminate outcomes remain non-corrupt" {
         .finding_code = .resource_limit,
         .error_message = null,
         .warning_message = "bounded test",
+        .byte_offset = 7, // codestream-relative fallback when no host offset
     }, false);
     try testing.expect(incomplete.is_valid);
     try testing.expectEqual(format_validation.ResultVerdict.indeterminate, incomplete.verdict);
     try testing.expect(!incomplete.validation_unsupported);
+    try testing.expectEqual(@as(?u64, 7), incomplete.warning_offset);
+    try testing.expect(!incomplete.warning_offset_is_exact);
 }
 
 // ---- EXR ----

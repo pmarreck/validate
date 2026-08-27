@@ -84,6 +84,10 @@ pub const ImageValidationResult = struct {
     jbig2_globals_issue: ?jbig2_decoder.Jbig2GlobalsIssue = null,
     /// Absolute PDF offset of the first raw byte in the JBIG2Globals stream.
     jbig2_globals_pdf_stream_start: ?usize = null,
+    /// Absolute PDF byte offset of this image XObject stream data start —
+    /// position state for malformation records. Null only for results built
+    /// outside a per-image walk (nested/decompressed sub-images).
+    stream_start: ?usize = null,
     width: u32,
     height: u32,
 };
@@ -1245,6 +1249,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
     var skipped_corrupt: u32 = 0;
 
     for (images) |img| {
+        const results_len_before = results.items.len;
 
         // Get the primary image filter (last in chain, as filters are applied in order)
         if (img.filters.len == 0) {
@@ -1424,6 +1429,12 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             else => {
                 skipped += 1;
             },
+        }
+
+        // Stamp the absolute PDF stream offset onto whatever result(s) this
+        // image produced — cheap position state for malformation records.
+        for (results.items[results_len_before..]) |*r| {
+            if (r.stream_start == null) r.stream_start = img.stream_start;
         }
     }
 
@@ -1667,7 +1678,14 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
         else => .{ .result = null, .status = .skipped },
     };
 
-    return validation_result;
+    // Stamp the absolute PDF stream offset onto this image's result — cheap
+    // position state consumed by malformation records downstream.
+    var stamped = validation_result;
+    if (stamped.result) |*r| {
+        if (r.stream_start == null) r.stream_start = img.stream_start;
+    }
+
+    return stamped;
 }
 
 /// Validate PDF images in parallel using thread pool

@@ -57,8 +57,11 @@ pub const JxlValidationResult = struct {
     finding_code: JxlFindingCode,
     error_message: ?[]const u8,
     warning_message: ?[]const u8 = null,
-    byte_offset: u64 = 0,
-    host_byte_offset: u64 = 0,
+    /// Byte offsets of the first finding (codestream-relative and
+    /// host-file-absolute). Null when the facade reported no coordinate —
+    /// never fabricated as 0.
+    byte_offset: ?u64 = null,
+    host_byte_offset: ?u64 = null,
     offset_is_exact: bool = false,
     frames_validated: u32 = 0,
 };
@@ -164,14 +167,14 @@ fn mapStrictResult(strict: *const jpegz.StrictValidationResult) JxlValidationRes
         .indeterminate => .indeterminate,
     };
     var code: JxlFindingCode = if (verdict == .valid) .none else .unclassified_decoder_error;
-    var byte_offset: u64 = 0;
-    var host_byte_offset: u64 = 0;
+    var byte_offset: ?u64 = null;
+    var host_byte_offset: ?u64 = null;
     var offset_is_exact = false;
     if (strict.findings.items.len > 0) {
         const finding = strict.findings.items[0];
         if (verdict != .valid) code = codeFromJpegz(finding.code);
-        byte_offset = finding.offset orelse 0;
-        host_byte_offset = finding.host_offset orelse 0;
+        byte_offset = finding.offset;
+        host_byte_offset = finding.host_offset;
         offset_is_exact = finding.offset_is_exact;
     }
     const message = findingMessage(code);
@@ -252,8 +255,8 @@ test "jpegz strict unsupported verdict remains distinct" {
     try std.testing.expect(result.valid);
     try std.testing.expectEqual(JxlFindingCode.unsupported_feature, result.finding_code);
     try std.testing.expect(result.warning_message != null);
-    try std.testing.expectEqual(@as(u64, 17), result.byte_offset);
-    try std.testing.expectEqual(@as(u64, 117), result.host_byte_offset);
+    try std.testing.expectEqual(@as(?u64, 17), result.byte_offset);
+    try std.testing.expectEqual(@as(?u64, 117), result.host_byte_offset);
     try std.testing.expect(result.offset_is_exact);
     try std.testing.expectEqual(@as(u32, 2), result.frames_validated);
 }
