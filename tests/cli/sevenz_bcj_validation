@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# 7z BCJ / BCJ2 deep-validation CLI tests.
+#
+# Coverage ruling (Peter, 2026-08-27): streaming may NEVER lose coverage.
+# z7z pin d495452 streams x86 BCJ+LZMA/LZMA2 and BCJ2 folder graphs in
+# archive.verify(); these archives must therefore reach FULL depth
+# (depth=1, payload CRCs verified) with valid=true and NO
+# "Unsupported 7z feature" warning. Before that pin they degraded to a
+# structural-depth WARN — that is the red this test was written against.
+#
+# Fixtures (committed, synthesized — provenance in tests/fixtures/sevenz/):
+#   bcj_x86.7z     BCJ(x86)+LZMA2 folder      (7zz a -m0=BCJ -m1=LZMA2)
+#   bcj2_x86.7z    BCJ2 with 3 LZMA streams   (7zz a -m0=BCJ2 -m1=LZMA:d1m
+#                    -m2=LZMA:d1m:lc0:lp2 -m3=LZMA:d1m -mb0:1 -mb0s1:2 -mb0s2:3)
+#   lzma2_plain.7z plain LZMA2 control        (7zz a -m0=LZMA2)
+# All three pack the same synthesized x86-64 ELF object (dense E8 call
+# sites so the BCJ filter genuinely transforms bytes).
+#
+# Detection is also asserted: a byte flipped inside the packed stream of
+# each BCJ archive must yield valid=false (CRC/decode failure), proving
+# full-depth verification actually decodes the payload.
+
+set -u
+
+. "$(dirname "$0")/_lib.sh"
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+FIXDIR="$(dirname "$0")/../fixtures/sevenz"
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_sevenz_bcj.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+# assert_full_valid NAME FIXTURE
+# Clean archive must be: valid=true, depth=1 (full), no warning at all.
+assert_full_valid() {
+	local name="$1" fixture="$2" out rc
+	out="$("$BIN" --json "$fixture" 2>/dev/null)"
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		fail "$name: exit code $rc (want 0); output: $out"
+		return
+	fi
+	if ! grep -q '"valid":true' <<<"$out"; then
+		fail "$name: not valid=true: $out"
+		return
+	fi
+	if ! grep -q '"format":"sevenz"' <<<"$out"; then
+		fail "$name: not detected as sevenz: $out"
+		return
+	fi
+	if ! grep -q '"depth":1' <<<"$out"; then
+		fail "$name: depth is not 1 (full) — streaming lost coverage: $out"
+		return
+	fi
+	if grep -qi 'unsupported' <<<"$out"; then
+		fail "$name: reports an unsupported-feature warning: $out"
+		return
+	fi
+	if grep -q '"warning"' <<<"$out"; then
+		fail "$name: unexpected warning present: $out"
+		return
+	fi
+	pass "$name: valid=true at full depth, no warning"
+}
+
+# assert_corruption_detected NAME FIXTURE OFFSET
+# Flip one byte (XOR 0xFF) inside the packed stream region; validation
+# must now fail (valid=false, nonzero exit).
+assert_corruption_detected() {
+	local name="$1" fixture="$2" offset="$3" corrupt out rc orig_byte flipped
+	corrupt="$tmpdir/$(basename "$fixture" .7z)_corrupt.7z"
+	cp "$fixture" "$corrupt"
+	orig_byte="$(od -An -tu1 -j "$offset" -N1 "$corrupt" | tr -d ' ')"
+	flipped="$(printf '%02x' $(( orig_byte ^ 255 )))"
+	if ! mutate_bytes "$corrupt" "$offset" "$flipped"; then
+		fail "$name: mutation did not land"
+		return
+	fi
+	out="$("$BIN" --json "$corrupt" 2>/dev/null)"
+	rc=$?
+	if [ "$rc" -eq 0 ]; then
+		fail "$name: corrupted archive exited 0: $out"
+		return
+	fi
+	if ! grep -q '"valid":false' <<<"$out"; then
+		fail "$name: corrupted archive not valid=false: $out"
+		return
+	fi
+	pass "$name: packed-stream corruption detected (rc=$rc)"
+}
+
+for f in bcj_x86.7z bcj2_x86.7z lzma2_plain.7z; do
+	if [ ! -f "$FIXDIR/$f" ]; then
+		echo "FAIL: missing committed fixture $FIXDIR/$f"
+		exit 1
+	fi
+done
+
+assert_full_valid "BCJ(x86)+LZMA2 full-depth" "$FIXDIR/bcj_x86.7z"
+assert_full_valid "BCJ2+LZMA full-depth" "$FIXDIR/bcj2_x86.7z"
+assert_full_valid "plain LZMA2 control full-depth" "$FIXDIR/lzma2_plain.7z"
+
+# Offset 2048 sits inside the packed stream of every fixture
+# (all three are ~7 KB with a 32-byte start header and packed data
+# beginning right after it; next header lives near EOF).
+assert_corruption_detected "BCJ(x86)+LZMA2 detection" "$FIXDIR/bcj_x86.7z" 2048
+assert_corruption_detected "BCJ2+LZMA detection" "$FIXDIR/bcj2_x86.7z" 2048
+assert_corruption_detected "plain LZMA2 detection" "$FIXDIR/lzma2_plain.7z" 2048
+
+echo ""
+echo "sevenz_bcj_validation: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

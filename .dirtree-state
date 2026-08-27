@@ -112,6 +112,7 @@ annotate=[
 	tests/cli/progress_size_lookup_scaling = Hermetic CLI complexity classifier: reordered 64-file run proves one O(1) progress-size probe and correct bytes per completion.
 	tests/cli/quickselect_scaling = Compiles the actual CLI selector with a test-only comparator counter; rejects 100k sorted/equal P90 quadratic regressions without timing.
 	tests/cli/quickselect_scaling.c = 100k ascending, descending, and uniform-size operation-count oracle for CLI three-way introselect correctness and complexity.
+	tests/cli/sevenz_bcj_validation = CLI regression: BCJ/BCJ2 7z archives must reach full depth with corruption detection (z7z pin d495452, coverage ruling 2026-08-27)
 	tests/cli/streaming_ceiling = Real-cgroup streaming ceiling gate with throughput-independent self-controls.
 	tests/cli/streaming_expected.tsv = claim-implies-proof manifest: expected streams/resident class per A/V family; flip rows only WITH conversion commits
 	tests/cli/streaming_ladder = N-ladder leak guard: peak child RSS via LuaJIT getrusage must match EXPECTED_LADDER (baseline: growing)
@@ -122,4 +123,5 @@ annotate=[
 	tests/fixtures/png_bad_ancillary_crc.png = 85-byte PNG, ancillary tEXt chunk at offset 33 has corrupt CRC (named-malformation-record fixture)
 	tests/fixtures/h265_wpp = Synthetic Main10 WPP HEVC fixtures (black 1920x802 x265 + corrupt twin) for the WPP CABAC regression gate
 	tests/fixtures/process_allocator_policy.c = C fixture exercising CLI allocator policy as a set of environment cases
+	tests/fixtures/sevenz = Committed synthesized 7z fixtures: BCJ(x86)+LZMA2, BCJ2+3xLZMA, plain LZMA2 control (same x86 ELF object payload)
 ]

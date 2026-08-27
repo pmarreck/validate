@@ -92,13 +92,25 @@ at the bottom. Older completed sections were rolled up — full history lives in
 - [ ] **FREEZE POSTPONED (Peter, 2026-08-27 12:27 EDT): "We are not
       freezing yet. These fixes are urgent pre-launch items."** Three
       coverage rulings from Peter today, all launch-critical:
-      1. **7z BCJ-chain streaming coverage** — streaming conversions may
-         NEVER lose coverage. z7z's streaming verify sink must handle
-         BCJ/Delta(+BCJ2) folder chains (its CLI extraction already does;
-         the July streaming cutover dropped it). Work order sent to z7z
-         (Peter re-erected its agent, Claude, processing); on its SHA:
-         re-pin, drop the chained-folder structural fallback, BCJ fixture
-         into ground truth.
+      1. **7z BCJ-chain streaming coverage** — DONE 2026-08-27 ~14:00 EDT
+         (worktree agent). z7z re-pinned to d495452 (BCJ x86 + BCJ2
+         streaming verify, Mechatron-green); no validate-side allowlist
+         existed to delete — the structural fallback was z7z's
+         UnsupportedFeature surfacing through the honest WARN mapping,
+         which stays for genuinely unsupported filters (ARM/PPC/Delta).
+         Red witnessed at old pin (depth=0 + "Unsupported 7z feature",
+         corruption undetected 3/150 sniper), green at new pin (depth=1,
+         sniper 150/150 on both BCJ and BCJ2 fixtures; plain-LZMA2 sweep
+         TSV byte-identical before/after). Committed fixtures in
+         tests/fixtures/sevenz/ + tests/cli/sevenz_bcj_validation gate.
+         NVSE witness file fully validated rc=0 under 256M MemoryMax.
+         New z7z error `InputReadFailed` mapped in sevenz_validator.zig.
+         FOLLOW-UP: same pin ships `archive.verifyRange(RangeSource)` —
+         range-backed verification (short reads legal, zero-read =
+         TruncatedInput; verify() is now a zero-copy adapter over it; one
+         packed folder retained at a time pending z7z codec-reader
+         refactor). Cite THAT API for future mmap-free 7z sourcing;
+         deliberately not adopted in this change.
       2. **RAR: no size caps, ever** — "NOTHING is too large for deep
          validation." rarz needs a streaming verification sink (bounded by
          dict state, mmap input, decoded bytes never accumulate); then

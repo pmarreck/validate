@@ -117,6 +117,10 @@ fn z7zErrorString(err: z7z.archive.ArchiveError) []const u8 {
 		error.NotArchive => "Not a 7-Zip archive",
 		error.ChecksumError => "7-Zip checksum mismatch",
 		error.TruncatedInput => "7-Zip archive truncated",
+		// New in z7z d495452 with verifyRange (range-backed sources can fail
+		// mid-read); unreachable in practice for our in-memory slices but the
+		// error set demands handling.
+		error.InputReadFailed => "Failed to read 7-Zip archive data",
 		error.StructuralError => "7-Zip archive structure invalid",
 		error.UnsupportedFeature => errmsg.unsupported("7z feature"),
 		error.EndOfStream => "7-Zip archive ended unexpectedly",
