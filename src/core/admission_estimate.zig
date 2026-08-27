@@ -11,16 +11,19 @@
 //! Pure (no I/O): callers supply the path and the base size; this module only
 //! classifies and multiplies. Keep the table SMALL and every row cited.
 //!
-//! RAR note (rarz pin 9bf3cfa, 2026-08-27): the PRECISE budget exists
+//! RAR note (rarz pin 3ddbbdd, 2026-08-27): the PRECISE budget exists
 //! post-open — `rarz_max_dictionary_size(archive)` returns the largest
 //! dictionary window rarz will allocate for any entry, from parsed headers
 //! alone (0 = cannot budget; decline with a reason, never treat as free).
-//! Verification residency is that window plus fixed decoder/hash state,
+//! Verification residency is that window plus decoder/hash state,
 //! independent of archive size; the mmap'd input stays evictable page cache.
-//! Admission here is extension-keyed and PRE-open by design (no open+read
-//! per file before the gate), so .rar keeps the generic estimate today; a
-//! future two-phase admission (cheap header parse, then re-reserve) can swap
-//! in the exact number.
+//! One stated hole: a RAR3 PPMd block declares its own model heap (up to
+//! 256 MiB) INSIDE the compressed stream, invisible to the pre-decode
+//! budget call (rarz gate doc, 3ddbbdd). Admission here is extension-keyed
+//! and PRE-open by design (no open+read per file before the gate), so .rar
+//! keeps the generic estimate today; a future two-phase admission (cheap
+//! header parse, then re-reserve) can swap in the exact number plus the
+//! PPMd worst case.
 
 const std = @import("std");
 

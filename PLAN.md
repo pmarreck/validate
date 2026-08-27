@@ -169,23 +169,24 @@ at the bottom. Older completed sections were rolled up — full history lives in
       two-phase admission). NOTE for coordinator: zigDepsHash refreshed for
       this branch's zon (old tiffz pin); the uncommitted tiffz re-pin in
       the main checkout needs its own refresh on merge.
-      **Bohemian Rhapsody witness (1115.6 MB RAR 1.5 v29 -m5 -md=4m,
-      1549 entries, unrar `t` All OK in 39.06s/19.77s user, 76 MB peak):
-      BLOCKED ON TWO NEW rarz DEFECTS AT THE PIN, needs a rarz work
-      order** — (a) false positive: `bohemian rhapsody.aup` (245 KB text,
-      PPMd) returns "decompression failed" on the clean archive (rarz CLI
-      at exactly 9bf3cfa, ReleaseFast: INVALID in 0.02s user via `t`;
-      per-entry `verify` shows entry 2 UNVERIFIED, first ~156 entries
-      otherwise OK at ~7.5 entries/s); (b) pathological throughput: around
-      entry ~157+, decode drops to minutes-per-entry — the ReleaseFast CLI
-      burned 14+ min CPU stuck past that point (perf: 99.8% in
-      decompress.ppm.RangeCoder.decode/normalize), and validate's plain
-      witness run burned 40+ min CPU without completing. THE MEMORY
-      CONTRACT HOLDS: validate's run held RssAnon 8,096 kB steady /
-      VmHWM 62,768 kB over the whole hour (mmap input evictable, exactly
-      as promised) — the defects are correctness/speed, not memory. Cap
-      deletion is independently witnessed by the synthetic >1 GiB fixture
-      (tests/cli/rar_large_deep_validation, green).
+      **Bohemian Rhapsody witness — RESOLVED at rarz pin `3ddbbdd`**
+      (clean-room PPMd variant H; the two defects found at 9bf3cfa — the
+      .aup PPMd false positive and the RangeCoder throughput cliff — were
+      one root cause, a stand-in PPM model predating the streaming work;
+      rarz's PPMd-free corpus kept every gate collusively green). At
+      3ddbbdd, witnessed here: plain `OK … (fully validated)` rc=0 in
+      25.80s wall / 20.18s user, and under
+      `systemd-run --user --scope -p MemoryMax=512M -p MemorySwapMax=0`
+      on a COLD cache (vmtouch -e first): rc=0 in 26.15s wall / 20.44s
+      user, max RSS 527,664 kB (ceiling binding, file pages evicting),
+      peak RssAnon 10,016 kB. unrar reference: 39.06s wall / 19.77s user.
+      validate now BEATS unrar wall-clock on this archive. Sniper parity
+      (seed 42, 300 trials) byte-identical across bf6840c/9bf3cfa/3ddbbdd
+      on both committed fixtures. Pin carries rarz's new PPMd fixtures
+      (rar4_ppm_prose.rar, rar4_ppm_xml.rar — run in rarz's own suite).
+      Stated hole for two-phase admission later: a RAR3 PPMd block
+      declares its model heap (≤256 MiB) inside the stream, invisible to
+      rarz_max_dictionary_size() (noted in admission_estimate.zig docs).
 
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
