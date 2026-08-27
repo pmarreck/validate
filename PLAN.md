@@ -72,6 +72,31 @@ at the bottom. Older completed sections were rolled up — full history lives in
       downgraded to post-freeze (GUI interim lercz link documented;
       tiffz still unresponsive, re-pinged 2026-08-26).
 
+- [ ] **FREEZE POSTPONED (Peter, 2026-08-27 12:27 EDT): "We are not
+      freezing yet. These fixes are urgent pre-launch items."** Three
+      coverage rulings from Peter today, all launch-critical:
+      1. **7z BCJ-chain streaming coverage** — streaming conversions may
+         NEVER lose coverage. z7z's streaming verify sink must handle
+         BCJ/Delta(+BCJ2) folder chains (its CLI extraction already does;
+         the July streaming cutover dropped it). Work order sent to z7z
+         (Peter re-erected its agent, Claude, processing); on its SHA:
+         re-pin, drop the chained-folder structural fallback, BCJ fixture
+         into ground truth.
+      2. **RAR: no size caps, ever** — "NOTHING is too large for deep
+         validation." rarz needs a streaming verification sink (bounded by
+         dict state, mmap input, decoded bytes never accumulate); then
+         delete the 1GiB cap in validateRarDeep and witness the 1115MB
+         Bohemian Rhapsody fixture under a cgroup ceiling. Work order sent
+         to rarz (Peter pinging its session).
+      3. **Named malformations + byte offsets** end-to-end (core records →
+         FFI → CLI ndjson/human → GUI seam): agent in flight. Kills the
+         GUI "4 malformation(s)" bitmask-as-count bug at the root; offsets
+         populated wherever walker state has them, honest null otherwise.
+      Plus: **archive families join the streaming-ceiling harness** so
+      size-cap/coverage regressions become mechanically impossible.
+      Beta date: LPM note frames Sept 15; Einstein to adjudicate vs the
+      original Sept 1. Freeze happens when Peter says so.
+
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
       Validate Founding Beta launches 2026-09-01; a named freeze commit +
