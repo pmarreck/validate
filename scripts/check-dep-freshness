@@ -92,7 +92,12 @@ local function pin_of(url)
 end
 
 local resolver = os.getenv("VALIDATE_DEP_RESOLVER_CMD")
-local sibling_root = os.getenv("VALIDATE_SIBLING_ROOT") or (os.getenv("HOME") .. "/Code")
+-- HOME can be unset (nix develop --ignore-env, some CI shells): a missing
+-- root just means no sibling oracle, never a crash.
+local home = os.getenv("HOME")
+local sibling_root = os.getenv("VALIDATE_SIBLING_ROOT")
+	or (home and (home .. "/Code"))
+	or "/nonexistent-sibling-root"
 -- Oracle order (Peter, 2026-08-27): default sibling-first — the local
 -- checkout under ~/Code/<repo-basename> is the freshest truth on the fleet's
 -- home box (unpushed work counts), with the network as fallback for repos
