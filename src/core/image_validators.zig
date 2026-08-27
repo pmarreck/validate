@@ -2605,23 +2605,11 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
             .too_large => return ValidationResult.okWithDepthAndWarning(format, .structural, "RAW file too large for non-mmap deep decode"),
         };
 
-        // CR2 INTERIM (2026-08-15): tiffz's container walk false-rejects a
-        // labeled-good sRAW2 CR2 as Malformed (exiftool -validate: OK;
-        // escalated to tiffz with the fixture). Until their fix lands, CR2
-        // gets signature-trust + the preview-JPEG deep check below, at
-        // honest structural depth — never a false reject. Regression test:
-        // "labeled-good CR2 stays valid without libraw".
-        if (format == .cr2) {
-            if (findTiffPreviewLocation(buffer, format)) |loc| {
-                const preview_bytes = buffer[@intCast(loc.offset) .. @intCast(loc.offset + loc.length)];
-                const preview_check = jpeg_validator.validateJpegDeepFromBuffer(preview_bytes);
-                if (!preview_check.valid) {
-                    return ValidationResult.invalidWithDepth(format, preview_check.error_message orelse "embedded preview JPEG corrupt", .full);
-                }
-            }
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "CR2 container walk pending tiffz CR2 fix (tracked); preview JPEG deep-validated");
-        }
-
+        // CR2 interim removed 2026-08-27: tiffz 964bcc89 fixed the sRAW2
+        // false-Malformed (BitsPerSample/SamplesPerPixel inference) and
+        // implements Peter's partial-coverage walk ruling — old-JPEG IFDs
+        // are skipped with finding 16 (WARN), so CR2 takes the same full
+        // walk + preview deep-check as ARW/NEF.
         const tiffz_result = tiffz_shim.validateTiffDeepBuffer(allocator, buffer, format);
         if (!tiffz_result.is_valid) {
             return tiffz_result;
@@ -8735,11 +8723,12 @@ test "validateWebp: u32-overflow declared RIFF size must not bypass the truncati
 	try std.testing.expect(!r.is_valid and r.error_code != null and r.error_code.? == .exceeds_bounds);
 }
 
-test "labeled-good CR2 stays valid without libraw (tiffz CR2 false-Malformed interim)" {
-    // Control for the 2026-08-15 escalation: exiftool -validate says OK on
-    // this fixture; tiffz's walk said Malformed. Until tiffz's fix, CR2 is
-    // signature+preview validated at structural depth. When tiffz lands the
-    // fix, re-enable the walk and tighten this to assert their acceptance.
+test "labeled-good sRAW2 CR2 accepted through the full tiffz walk with code-16 WARN" {
+    // 2026-08-15 escalation closed by tiffz 964bcc89: the walk now ACCEPTS
+    // this fixture (exiftool agrees), skipping its two old-JPEG IFDs
+    // (ifd=0 preview, ifd=3 Canon sRAW vendor raw) under Peter's
+    // partial-coverage ruling. Assert acceptance AND that the skip surfaces
+    // as the code-16 WARN — partial coverage must never be silent validity.
     var source = FileSource.open("ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
@@ -8747,4 +8736,8 @@ test "labeled-good CR2 stays valid without libraw (tiffz CR2 false-Malformed int
     defer source.close();
     const result = validateTiffDeep(std.testing.allocator, &source, .cr2);
     try testing.expect(result.is_valid);
+    try testing.expectEqualStrings(
+        "TIFF IFD skipped: compression unsupported by policy (portion not validated)",
+        result.warning_message orelse return error.TestExpectedEqual,
+    );
 }

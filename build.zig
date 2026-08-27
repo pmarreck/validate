@@ -270,6 +270,19 @@ pub fn build(b: *std.Build) void {
     };
     const tiffz_mod = tiffz_dep.module("tiffz");
 
+    // lercz: the exact LERC C-ABI instance tiffz's module links (exported by
+    // tiffz 30d92d24 as artifact "lerc"). Merged into all_c_deps so the
+    // installed libvalidate_core.a OWNS its LERC link closure — before this,
+    // every static consumer inherited unresolved lerc_getBlobInfo/lerc_decode
+    // and had to carry its own lercz link (validate_gui did, temporarily).
+    // Gated by tests/cli/lerc_link_closure.
+    const lerc_lib = tiffz_dep.artifact("lerc");
+    // zstdz: same closure story as lerc — tiffz's ZSTD-in-TIFF codec
+    // (Compression=50000, ac381e64) references ZSTD_* through its module
+    // graph; external static consumers need the exact instance merged.
+    // Caught by tests/cli/lerc_link_closure before it ever shipped.
+    const zstd_lib = tiffz_dep.artifact("zstd");
+
     // rawz: vendor-RAW semantics (PEF cutover per Einstein M3; more families
     // as rawz lands them). Built as a source module so we can inject the
     // "tiffz-parser" module from the SAME tiffz_dep instance as the full
@@ -538,6 +551,8 @@ pub fn build(b: *std.Build) void {
         compact_pro_lib, // Compact Pro archive validation
         uchardetz_lib,   // Mozilla uchardet — charset detection for plain-text validators
         rarz_lib,        // clean-room RAR archive verification through stable C ABI
+        lerc_lib,        // LERC decode (tiffz's lercz instance) — archive owns its link closure
+        zstd_lib,        // Zstandard decode (tiffz's zstdz instance) — same closure contract
     };
 
     // Static library for FFI

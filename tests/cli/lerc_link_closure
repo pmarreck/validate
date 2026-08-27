@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# lerc_link_closure — the installed core archive must OWN its LERC link
+# closure (Einstein handoff 2026-08-20; Founding Beta critical path #3).
+#
+# The hole this reproduces: tiffz's LERC-in-TIFF path references
+# lerc_getBlobInfo/lerc_decode, but lercz's objects were never merged into
+# libvalidate_core.a — every static consumer (validate_gui witnessed it)
+# inherited unresolved symbols and had to carry its own lercz link, which
+# violates the "installed consumer contract is complete" rule.
+#
+# Two independent checks, weakest first:
+#   1. SYMBOL AUDIT — the merged archive must not contain any lerc_* symbol
+#      that is undefined in every member (nm-level closure).
+#   2. REAL EXTERNAL LINK + CALL — compile a C consumer that forces the
+#      tiffz LERC object to be pulled (referencing the FFI surface), link
+#      against ONLY the installed lib dir + system libs, run it. The PLAN
+#      warns an nm audit can pass while a real link still fails, so the
+#      link is the acceptance; nm is the fast first tripwire.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LIB="$ROOT/zig-out/lib/libvalidate_core.a"
+HDR="$ROOT/ffi/validate_core.h"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+[ -f "$LIB" ] || { printf 'SKIP: lerc_link_closure — %s not built\n' "$LIB" >&2; exit 77; }
+[ -f "$HDR" ] || fail "FFI header missing: $HDR"
+command -v nm >/dev/null 2>&1 || { printf 'SKIP: lerc_link_closure — nm not on PATH\n' >&2; exit 77; }
+command -v zig >/dev/null 2>&1 || { printf 'SKIP: lerc_link_closure — zig not on PATH\n' >&2; exit 77; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/lerc_link_closure.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+# --- 1. SYMBOL AUDIT ---------------------------------------------------------
+# Every lerc_* symbol referenced (U) anywhere in the archive must be defined
+# (T/t/D/W) by some member of the same archive.
+# nm line shapes: undefined = "U name" ($1=U, $2=name); defined =
+# "ADDR T name" ($1=hex address, $2=type letter, $3=name). The original
+# version of this check matched the type letter in $1 for definitions and
+# therefore could never see one — witnessed 2026-08-27 reporting the two
+# lerc symbols unresolved in an archive that demonstrably defined them.
+nm "$LIB" 2>/dev/null | awk '
+	NF == 2 && $1 == "U" && $2 ~ /^lerc_/ { undef[$2] = 1 }
+	NF == 3 && $2 ~ /^[TtDdWwBbSsRr]$/ && $3 ~ /^lerc_/ { def[$3] = 1 }
+	END { for (s in undef) if (!(s in def)) { print s; bad = 1 } exit bad }
+' > "$work/unresolved.txt"
+if [ -s "$work/unresolved.txt" ]; then
+	printf 'FAIL: installed archive has unresolved LERC symbols (consumer contract incomplete):\n' >&2
+	cat "$work/unresolved.txt" >&2
+	exit 1
+fi
+
+# --- 2. REAL EXTERNAL LINK + CALL --------------------------------------------
+# A minimal consumer using only the installed contract: header + archive +
+# ordinary system libs. validate_version() proves the link produced a
+# runnable binary; the whole-archive link (--whole-archive) forces every
+# member object in, so ANY unresolved reference anywhere in the archive —
+# lerc or otherwise-fenced-in code — breaks the link the way a real static
+# consumer pulling that object would.
+# The consumer references validate_file (the deep-validation entry), which
+# pulls the full core graph — tiffz's objects and their lerc_* references
+# included — through an ORDINARY lazy link, the same shape as validate_gui's
+# real link that originally surfaced the unresolved symbols. (No
+# --whole-archive: that would also force the known nested-libz.a
+# pseudo-member, which every linker rejects — see the PLAN.md follow-up.)
+cat > "$work/consumer.c" <<'EOF'
+#include <stdio.h>
+#include "validate_core.h"
+int main(int argc, char **argv) {
+	const char *v = validate_version();
+	printf("%s\n", v ? v : "(null)");
+	if (argc > 99) { validate_free(validate(argv[1])); } /* force the pull, never runs */
+	return v == 0;
+}
+EOF
+# Linked with `zig cc` (lld): the toolchain contract we ship. KNOWN GAP,
+# tracked in PLAN.md (2026-08-27): the merged archive currently carries ONE
+# nested archive member (libz.a duplicate-append surviving llvm-ar's L
+# flatten), which strict GNU ld.bfd rejects outright. lld tolerates it, so
+# this test cannot yet use ld.bfd; when the merge recipe is fixed (MRI
+# ADDLIB flatten), add an assertion here that `ar t` lists no *.a members.
+if ! zig cc -o "$work/consumer" "$work/consumer.c" \
+	-I "$ROOT/ffi" \
+	"$LIB" \
+	-lstdc++ -lm -lpthread -ldl 2> "$work/link.log"; then
+	printf 'FAIL: external consumer link failed against installed archive:\n' >&2
+	grep -E "undefined|error" "$work/link.log" | head -10 >&2
+	exit 1
+fi
+out="$("$work/consumer")" || fail "linked consumer failed at runtime"
+[ -n "$out" ] || fail "validate_version returned empty"
+
+echo "PASS: installed archive owns its LERC link closure (nm clean; external consumer link + call ok)"

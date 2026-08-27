@@ -266,6 +266,14 @@ fn routeInfoFinding(code: tiffz.findings.InfoFinding) RoutedFinding {
         .final_strip_padding_tolerated => .{ .warning = "final TIFF strip padded beyond image rows (libtiff-tolerated)" },
         .lzw_missing_eod_tolerated => .{ .warning = "TIFF LZW stream ends at exact extent without EOD terminator (libtiff-tolerated)" },
         .tiled_geometry_via_strip_tags_tolerated => .{ .warning = "tiled TIFF stores geometry via strip tags (libtiff-tolerated)" },
+        // Code 16 (Peter's 2026-08-27 walk-semantics ruling, tiffz 964bcc89):
+        // an otherwise well-formed IFD whose compression tiffz deliberately
+        // never decodes (old-JPEG 6, CCITT RLE 2, vendor codes, …) is skipped
+        // with partial coverage — accept with WARN, never silent validity;
+        // a SUPPORTED codec's failure keeps its native FAIL, so this can
+        // never mask real corruption. Payload (u32 LE IFD index + u32 LE
+        // compression code) rendering joins code 13's recorded follow-up.
+        .unsupported_compression_skipped => .{ .warning = "TIFF IFD skipped: compression unsupported by policy (portion not validated)" },
         _ => .{ .info = "unknown tiffz finding code" },
     };
 }
