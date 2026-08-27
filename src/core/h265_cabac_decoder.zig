@@ -18,14 +18,18 @@ const runtime = @import("runtime.zig");
 // Scan Order Tables (ITU-T H.265 Section 6.5.3)
 // ============================================================================
 
-/// Diagonal scan order for 4x4 blocks (16 positions).
-/// Each entry is (x, y) in the 4x4 block. Scan goes bottom-left to top-right
-/// along anti-diagonals.
+/// Up-right diagonal scan order for 4x4 blocks (16 positions), spec 6.5.3.
+/// Each entry is (x, y). Within each anti-diagonal the scan starts at the
+/// BOTTOM-LEFT cell (larger y) and moves up-right — i.e. (0,1) before (1,0).
+/// Matches ff_hevc_diag_scan4x4_x/_y and libde265's ScanOrderPos; the
+/// previous table was the transpose (x/y swapped), which shifted every
+/// sig_coeff_flag context and last_sig position for DIAG-scanned TBs
+/// (witnessed via instrumented-libde265 bin-trace diff, 2026-08-27).
 const diag_scan_4x4: [16][2]u8 = .{
-    .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 2, 0 },
-    .{ 1, 1 }, .{ 0, 2 }, .{ 3, 0 }, .{ 2, 1 },
-    .{ 1, 2 }, .{ 0, 3 }, .{ 3, 1 }, .{ 2, 2 },
-    .{ 1, 3 }, .{ 3, 2 }, .{ 2, 3 }, .{ 3, 3 },
+    .{ 0, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 0, 2 },
+    .{ 1, 1 }, .{ 2, 0 }, .{ 0, 3 }, .{ 1, 2 },
+    .{ 2, 1 }, .{ 3, 0 }, .{ 1, 3 }, .{ 2, 2 },
+    .{ 3, 1 }, .{ 2, 3 }, .{ 3, 2 }, .{ 3, 3 },
 };
 
 /// Horizontal scan order for 4x4 blocks (raster row-major).
@@ -63,12 +67,17 @@ const INTRA_ANGULAR_26: u8 = 26;
 const INTRA_ANGULAR_34: u8 = 34;
 
 /// Scan type for residual_coding — picked per TU based on intra mode + size.
-/// Per spec section 8.4.4.2.7: pred_mode==INTRA AND log2_trafo_size < 4 →
-/// scan picks based on intra_pred_mode range. Otherwise always DIAG.
+/// Per spec 7.4.9.11 (scanIdx): the mode-based selection applies only when
+/// log2TrafoSize == 2, or log2TrafoSize == 3 AND cIdx == 0 — i.e. luma
+/// 4x4/8x8 and chroma 4x4. Chroma 8x8 (from a 16x16 luma CU in 4:2:0) is
+/// always DIAG; applying the mode rule there was a witnessed divergence
+/// (libde265 bin-trace diff: oracle DIAG vs our HORIZ on an 8x8 cIdx=1 TB
+/// with mode 26), 2026-08-27.
 const ScanType = enum { diag, horiz, vert };
 
-fn deriveScanIdx(intra_pred_mode: u8, log2_tb_size: u32) ScanType {
+fn deriveScanIdx(intra_pred_mode: u8, log2_tb_size: u32, is_luma: bool) ScanType {
     if (log2_tb_size >= 4) return .diag;
+    if (log2_tb_size == 3 and !is_luma) return .diag;
     if (intra_pred_mode >= 6 and intra_pred_mode <= 14) return .vert;
     if (intra_pred_mode >= 22 and intra_pred_mode <= 30) return .horiz;
     return .diag;
@@ -77,14 +86,14 @@ fn deriveScanIdx(intra_pred_mode: u8, log2_tb_size: u32) ScanType {
 /// Diagonal scan order for 8x8 sub-blocks within TBs.
 /// Used for sub-block iteration in 16x16 and 32x32 TBs.
 const diag_scan_2x2: [4][2]u8 = .{
-    .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 1 },
+    .{ 0, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 1, 1 },
 };
 
 const diag_scan_4x4_sb: [16][2]u8 = .{
-    .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 2, 0 },
-    .{ 1, 1 }, .{ 0, 2 }, .{ 3, 0 }, .{ 2, 1 },
-    .{ 1, 2 }, .{ 0, 3 }, .{ 3, 1 }, .{ 2, 2 },
-    .{ 1, 3 }, .{ 3, 2 }, .{ 2, 3 }, .{ 3, 3 },
+    .{ 0, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 0, 2 },
+    .{ 1, 1 }, .{ 2, 0 }, .{ 0, 3 }, .{ 1, 2 },
+    .{ 2, 1 }, .{ 3, 0 }, .{ 1, 3 }, .{ 2, 2 },
+    .{ 3, 1 }, .{ 2, 3 }, .{ 3, 2 }, .{ 3, 3 },
 };
 
 const diag_scan_8x8_sb: [64][2]u8 = blk: {
@@ -92,11 +101,14 @@ const diag_scan_8x8_sb: [64][2]u8 = blk: {
     var idx: usize = 0;
     var diag: u8 = 0;
     while (diag < 15) : (diag += 1) {
-        var y: u8 = if (diag < 8) 0 else diag - 7;
-        while (y <= diag and y < 8) : (y += 1) {
-            const x = diag - y;
-            if (x < 8) {
-                table[idx] = .{ x, y };
+        var i: u8 = if (diag < 8) 0 else diag - 7;
+        while (i <= diag and i < 8) : (i += 1) {
+            // Up-right diagonal (spec 6.5.3): within each anti-diagonal,
+            // start at the bottom-left cell (x smallest, y largest) and
+            // move up-right — x ascends, y = diag - x descends.
+            const other = diag - i;
+            if (other < 8) {
+                table[idx] = .{ i, other };
                 idx += 1;
             }
         }
@@ -149,6 +161,15 @@ const SliceCtx = struct {
 
     // log2_ctb_size for "above neighbor in same CTB row?" intra MPM check
     log2_ctb: u5,
+
+    // IsCuQpDeltaCoded (spec 7.3.8.10): cu_qp_delta_abs is coded at most
+    // once per quantization group. codingQuadtree resets this at every QG
+    // root (spec 7.3.8.4: log2CbSize >= Log2MinCuQpDeltaSize =
+    // CtbLog2SizeY - diff_cu_qp_delta_depth); transformUnit sets it after
+    // decoding. Witnessed divergence (libde265 bin-trace diff, 2026-08-27):
+    // the old per-TU decode re-read cu_qp_delta_abs at the second TU with
+    // cbf inside one QG, desyncing every textured x265 intra slice.
+    is_cu_qp_delta_coded: bool = false,
 
     fn lookupIntraMode(self: *const SliceCtx, x_pu: u32, y_pu: u32) u8 {
         if (self.intra_mode_map) |m| {
@@ -656,6 +677,16 @@ fn codingQuadtree(
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
 
+    // Quantization-group boundary (spec 7.3.8.4): reset IsCuQpDeltaCoded at
+    // every quadtree node whose CB size is >= Log2MinCuQpDeltaSize
+    // (= CtbLog2SizeY - diff_cu_qp_delta_depth). Additive form avoids
+    // underflow for diff > log2_cb_size.
+    if (info.cu_qp_delta_enabled and
+        log2_cb_size + info.diff_cu_qp_delta_depth >= info.log2_ctb_size)
+    {
+        ctx.is_cu_qp_delta_coded = false;
+    }
+
     var split = false;
     const cb_size = @as(u32, 1) << @intCast(log2_cb_size);
 
@@ -995,10 +1026,14 @@ fn transformUnit(
     const cbf_luma = engine.decodeBin(h265_tables.CTX_CBF_LUMA + luma_ctx) == 1;
     if (!engine.valid) return;
 
-    // cu_qp_delta
-    if (info.cu_qp_delta_enabled and (cbf_luma or cbf_cb or cbf_cr)) {
+    // cu_qp_delta — spec 7.3.8.10: coded at most ONCE per quantization
+    // group (gated by IsCuQpDeltaCoded, reset per QG in codingQuadtree).
+    if (info.cu_qp_delta_enabled and !ctx.is_cu_qp_delta_coded and
+        (cbf_luma or cbf_cb or cbf_cr))
+    {
         parseCuQpDelta(engine);
         if (!engine.valid) return;
+        ctx.is_cu_qp_delta_coded = true;
     }
 
     // transform_skip_flag for luma: only for 4x4 TBs (log2_tb_size == 2)
@@ -1040,7 +1075,7 @@ fn transformUnit(
         const pu_y_min = y0 >> 2;
         break :blk ctx.lookupIntraMode(pu_x_min, pu_y_min);
     };
-    const luma_scan_idx = deriveScanIdx(luma_intra_mode, log2_tb_size);
+    const luma_scan_idx = deriveScanIdx(luma_intra_mode, log2_tb_size, true);
 
     // Luma residual data
     if (cbf_luma) {
@@ -1067,7 +1102,7 @@ fn transformUnit(
             const pu_y_min = y0 >> 2;
             break :blk ctx.lookupChromaMode(pu_x_min, pu_y_min);
         };
-        const chroma_scan_idx = deriveScanIdx(chroma_mode_at_tb, log2_chroma_tb);
+        const chroma_scan_idx = deriveScanIdx(chroma_mode_at_tb, log2_chroma_tb, false);
         if (cbf_cb) {
             residualCoding(engine, info, log2_chroma_tb, false, chroma_scan_idx);
             if (!engine.valid) return;
@@ -1446,9 +1481,13 @@ fn residualCoding(
             if (!sig_flags[sp]) continue;
             if (g1_count >= 8) break;
 
-            // Context index: base + ctx_set*4 + greater1Ctx
+            // Context index: base + (chroma ? 16 : 0) + ctx_set*4 + greater1Ctx.
+            // The 24 greater1 contexts split 16 luma + 8 chroma; chroma's two
+            // ctx_sets live at offsets 16-23 (ffmpeg cabac.c
+            // coeff_abs_level_greater1_flag_decode: c_idx > 0 ? 16 : 0).
+            const g1_chroma_off: u16 = if (is_luma) 0 else 16;
             const g1_ctx_idx: u16 = h265_tables.CTX_COEFF_ABS_LEVEL_GREATER1 +
-                @as(u16, @intCast(ctx_set * 4)) + @as(u16, @intCast(greater1_ctx));
+                g1_chroma_off + @as(u16, @intCast(ctx_set * 4)) + @as(u16, @intCast(greater1_ctx));
             if (g1_ctx_idx >= h265_tables.NUM_H265_CONTEXTS) {
                 engine.valid = false;
                 return;
@@ -1478,8 +1517,11 @@ fn residualCoding(
         // coeff_abs_level_greater2_flag — at most 1 per sub-block
         var has_greater2: bool = false;
         if (num_greater1 > 0) {
-            // Context: per spec, ctxSet determines the context
-            const g2_ctx: u16 = h265_tables.CTX_COEFF_ABS_LEVEL_GREATER2 + @as(u16, @intCast(ctx_set));
+            // Context: base + (chroma ? 4 : 0) + ctxSet. The 6 greater2
+            // contexts split 4 luma + 2 chroma (ffmpeg cabac.c
+            // coeff_abs_level_greater2_flag_decode: c_idx > 0 ? 4 : 0).
+            const g2_chroma_off: u16 = if (is_luma) 0 else 4;
+            const g2_ctx: u16 = h265_tables.CTX_COEFF_ABS_LEVEL_GREATER2 + g2_chroma_off + @as(u16, @intCast(ctx_set));
             if (g2_ctx >= h265_tables.NUM_H265_CONTEXTS) {
                 engine.valid = false;
                 return;
@@ -1582,15 +1624,16 @@ fn residualCoding(
 
 /// Get the sub-block scan table for a given sub-block dimension and scan type.
 /// For 2x2 sub-block arrays (8x8 TBs), the scan order depends on scan_idx:
-/// DIAG and HORIZ produce identical 2x2 scans; only VERT differs. For larger
-/// sub-block arrays (16x16 and 32x32 TBs), only DIAG is valid per spec
-/// (non-DIAG scans are restricted to log2_trafo_size < 4).
+/// the up-right DIAG 2x2 scan (0,0),(0,1),(1,0),(1,1) coincides with VERT;
+/// only HORIZ differs. For larger sub-block arrays (16x16 and 32x32 TBs),
+/// only DIAG is valid per spec (non-DIAG scans are restricted to
+/// log2_trafo_size < 4).
 fn getSubBlockScan(num_sb_side: u32, scan_idx: ScanType) []const [2]u8 {
     return switch (num_sb_side) {
         1 => &[_][2]u8{.{ 0, 0 }},
         2 => switch (scan_idx) {
-            .diag, .horiz => &diag_scan_2x2,
-            .vert => &vert_scan_2x2,
+            .diag, .vert => &diag_scan_2x2,
+            .horiz => &horiz_scan_2x2,
         },
         4 => &diag_scan_4x4_sb,
         8 => &diag_scan_8x8_sb,
@@ -1669,28 +1712,24 @@ fn combineLastSigCoeff(prefix: u32, suffix: u32) u32 {
     return (@as(u32, 1) << shift) * (2 + (prefix & 1)) + suffix;
 }
 
-/// Context offset for last sig coeff — Table 9-38/9-39
+/// last_sig_coeff prefix ctxInc derivation — spec 9.3.4.2.3, matching ffmpeg
+/// last_significant_coeff_prefix_decode:
+///   luma:   ctxOffset = 3*(log2TbSize-2) + ((log2TbSize-1) >> 2)
+///   chroma: ctxOffset = 15
+/// The previous hand-rolled switch paired with a shift of 0 for 8x8 luma
+/// (spec: 1) and 0 for all chroma (spec: log2-2) — witnessed via libde265
+/// bin-trace diff (8x8 luma prefix bins used ctx 3,4,5 instead of 3,3,4),
+/// 2026-08-27.
 fn getLastSigCoeffCtxOffset(log2_tb_size: u32, is_luma: bool) u16 {
-    if (!is_luma) return 15; // Chroma: fixed offset
-    return switch (log2_tb_size) {
-        2 => 0, // 4x4: contexts 0-2
-        3 => 3, // 8x8: contexts 3-5
-        4 => 6, // 16x16: contexts 6-9
-        5 => 10, // 32x32: contexts 10-13
-        else => 0,
-    };
+    if (!is_luma) return 15;
+    return @intCast(3 * (log2_tb_size - 2) + ((log2_tb_size - 1) >> 2));
 }
 
-/// Context shift for last sig coeff — Table 9-38/9-39
+/// last_sig_coeff prefix ctxShift — spec 9.3.4.2.3:
+///   luma: (log2TbSize+1) >> 2; chroma: log2TbSize - 2.
 fn getLastSigCoeffCtxShift(log2_tb_size: u32, is_luma: bool) u32 {
-    if (!is_luma) return 0;
-    return switch (log2_tb_size) {
-        2 => 0, // 4x4
-        3 => 0, // 8x8
-        4 => 1, // 16x16: every 2 prefix bins share a context
-        5 => 1, // 32x32: every 2 prefix bins share a context
-        else => 0,
-    };
+    if (!is_luma) return log2_tb_size - 2;
+    return (log2_tb_size + 1) >> 2;
 }
 
 /// sig_coeff_flag context derivation — Section 9.3.3.1.4

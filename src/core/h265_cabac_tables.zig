@@ -133,14 +133,19 @@ const init_values_i_slice: [NUM_H265_CONTEXTS]u8 = blk: {
 
     // ---- Residual coding contexts ----
 
-    // Table 9-28: last_sig_coeff_x_prefix (I-slice)
-    const last_x_init = [18]u8{ 110, 110, 124, 110, 140, 111, 125, 111, 127, 111, 111, 111, 108, 111, CNU, CNU, CNU, CNU };
+    // last_sig_coeff_x_prefix, initType 0 (I-slice) — spec initValue table /
+    // ffmpeg init_values[0] (docs/hevc-reference/ffmpeg-hevc-cabac.c:151).
+    // Contexts 0-14 are luma (by TB size), 15-17 chroma. The previous table
+    // was wrong from index 3 on and left the chroma contexts at CNU=154 —
+    // witnessed via libde265 bin-trace diff (first chroma last_sig bin:
+    // oracle state 9, ours state 1, decode diverges), 2026-08-27.
+    const last_x_init = [18]u8{ 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111, 79, 108, 123, 63 };
     for (last_x_init, 0..) |v, j| {
         vals[CTX_LAST_SIG_COEFF_X_PREFIX + j] = v;
     }
 
-    // Table 9-29: last_sig_coeff_y_prefix (same as X for I-slice)
-    const last_y_init = [18]u8{ 110, 110, 124, 110, 140, 111, 125, 111, 127, 111, 111, 111, 108, 111, CNU, CNU, CNU, CNU };
+    // last_sig_coeff_y_prefix (identical to X for initType 0)
+    const last_y_init = [18]u8{ 110, 110, 124, 125, 140, 153, 125, 127, 140, 109, 111, 143, 127, 111, 79, 108, 123, 63 };
     for (last_y_init, 0..) |v, j| {
         vals[CTX_LAST_SIG_COEFF_Y_PREFIX + j] = v;
     }
@@ -160,9 +165,13 @@ const init_values_i_slice: [NUM_H265_CONTEXTS]u8 = blk: {
     for (sig_luma_init, 0..) |v, j| {
         vals[CTX_SIG_COEFF_FLAG + j] = v;
     }
+    // Chroma section of sig_coeff_flag, initType 0 — spec initValue table /
+    // ffmpeg init_values[0] (docs/hevc-reference/ffmpeg-hevc-cabac.c:160-163,
+    // entries 27-43). The previous values came from a different initType row
+    // and desynced the first chroma residual on textured content.
     const sig_chroma_init = [17]u8{
-        170, 154, 139, 153, 139, 123, 123, 63, 124,
-        166, 183, 140, 136, 153, 154, 166, 183,
+        140, 139, 182, 182, 152, 136, 152, 136, 153,
+        136, 139, 111, 136, 139, 111, 141, 111,
     };
     for (sig_chroma_init, 0..) |v, j| {
         vals[CTX_SIG_COEFF_FLAG + 27 + j] = v;
