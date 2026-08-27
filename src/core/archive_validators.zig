@@ -3253,7 +3253,11 @@ fn writeMinimalRar5(buf: []u8) usize {
 	return pos;
 }
 
-test "RAR over deep-validation size cap is WARN-indeterminate after header walk, not invalid" {
+test "RAR over 1 GiB is deep-validated, never size-capped" {
+	// Ruling (Peter, 2026-08-27): NOTHING is too large for deep validation.
+	// rarz pin 9bf3cfa bounds verification memory by the dictionary window,
+	// so a >1 GiB archive must reach payload verification instead of the old
+	// WARN-indeterminate size-cap escape.
 	const allocator = std.testing.allocator;
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
@@ -3263,7 +3267,7 @@ test "RAR over deep-validation size cap is WARN-indeterminate after header walk,
 
 	const f = try tmp_dir.dir.createFile(runtime.io(), "big.rar", .{});
 	try f.writePositionalAll(runtime.io(), rar_bytes[0..used], 0);
-	// Sparse-extend past the 1 GiB deep-validation cap (holes cost nothing on tmpfs).
+	// Sparse-extend past the old 1 GiB cap (holes cost nothing on tmpfs).
 	try f.writePositionalAll(runtime.io(), &[_]u8{0}, (1024 * 1024 * 1024) + 4096);
 	f.close(runtime.io());
 
@@ -3274,9 +3278,12 @@ test "RAR over deep-validation size cap is WARN-indeterminate after header walk,
 
 	const result = validateRarDeep(allocator, &src);
 	try std.testing.expect(result.is_valid);
-	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
-	try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
-	try std.testing.expect(result.warning_message != null);
+	// The cap returned verdict=indeterminate + a "too large" warning; a
+	// deep-validated empty archive is a plain valid verdict with no warning.
+	try std.testing.expectEqual(format_validation.ResultVerdict.valid, result.verdict);
+	try std.testing.expect(result.warning_message == null);
+	// rarz payload verification ran: the summary is attached as evidence.
+	try std.testing.expect(result.archive_verification != null);
 }
 
 test "oversized RAR with corrupt header CRC stays invalid" {
@@ -3318,19 +3325,10 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const header_result = validateRar(file);
     if (!header_result.is_valid) return header_result;
 
-    // Above this cap we decline to slurp/decode payloads. That is a resource
-    // decision, not damage evidence: the header walk above already verified
-    // structure, so the honest verdict is WARN/indeterminate, never invalid.
-    const max_size: u64 = 1024 * 1024 * 1024;
-    if (file_size > max_size) {
-        var capped = ValidationResult.okWithDepthAndWarning(
-            .rar,
-            .structural,
-            "RAR too large for deep validation; header CRCs verified, payloads not checked",
-        );
-        capped.verdict = .indeterminate;
-        return capped;
-    }
+    // No size cap: rarz (pin 9bf3cfa) bounds verification memory by the
+    // dictionary window plus fixed state on every path, so archive size never
+    // justifies declining payload verification. The mmap'd input below is
+    // evictable page cache, not anonymous memory.
 
     file.seekTo(0) catch
         return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "file", .structural);
@@ -3343,8 +3341,11 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
         .mapped => |m| m,
         .heap => |b| blk: { heap_rar = b; break :blk b; },
         .too_large => {
+            // Real platform limit, not a policy cap: no mmap on this target
+            // and the heap-slurp ceiling would swallow the whole archive as
+            // anonymous memory. Payloads stay unverified, so indeterminate.
             var capped = ValidationResult.okWithDepthAndWarning(.rar, .structural, "RAR too large for non-mmap deep validation");
-            capped.verdict = .indeterminate; // payloads unverified — same tier as the size cap above
+            capped.verdict = .indeterminate;
             return capped;
         },
     };

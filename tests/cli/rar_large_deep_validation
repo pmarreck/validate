@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# A RAR archive larger than 1 GiB must be DEEP-validated (payloads verified),
+# not waved through with a "too large for deep validation" WARN. Ruling
+# (Peter, 2026-08-27): NOTHING is too large for deep validation, period.
+# rarz pin 9bf3cfa bounds verification memory by the dictionary window, so
+# archive size no longer justifies declining.
+#
+# The >1 GiB fixture is synthesized at test time (never committed): a
+# deterministic incompressible stream (AES-256-CTR keystream, fixed key) is
+# archived with rar from nixpkgs. When neither a `rar` binary nor `nix shell`
+# can provide the archiver, this test SKIPs loudly (exit 77).
+. "$(dirname "$0")/_lib.sh"
+set -u
+
+if [[ -x "./zig-out/bin/validate" ]]; then
+	BIN="./zig-out/bin/validate"
+elif [[ -x "./zig-out/bin/validate.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+else
+	echo "FAIL: validate binary not found (tried ./zig-out/bin/validate and .exe)"
+	exit 1
+fi
+
+# --- locate an archiver -----------------------------------------------------
+RAR_CMD=()
+if command -v rar >/dev/null 2>&1; then
+	RAR_CMD=(rar)
+elif command -v nix >/dev/null 2>&1; then
+	# rar is unfree in nixpkgs: allow it for this one synthesis invocation.
+	export NIXPKGS_ALLOW_UNFREE=1
+	RAR_CMD=(nix shell --impure nixpkgs#rar -c rar)
+else
+	echo "SKIP: rar_large_deep_validation — no rar binary and no nix to provide one" >&2
+	exit 77
+fi
+if ! command -v openssl >/dev/null 2>&1; then
+	echo "SKIP: rar_large_deep_validation — openssl unavailable for deterministic data synthesis" >&2
+	exit 77
+fi
+
+# --- synthesize (or reuse) the >1 GiB fixture, OUTSIDE the repo -------------
+FIXTURE_DIR="${TMPDIR:-/tmp}/validate_rar_large_fixture"
+FIXTURE="$FIXTURE_DIR/large_incompressible.rar"
+MIN_BYTES=$((1024 * 1024 * 1024 + 1)) # strictly over the old 1 GiB cap
+DATA_BYTES=$((1181116006))            # ~1.1 GiB of incompressible payload
+
+fixture_ok() {
+	[[ -f "$1" ]] && [[ "$(stat -c%s "$1" 2>/dev/null || echo 0)" -ge "$MIN_BYTES" ]]
+}
+
+if ! fixture_ok "$FIXTURE"; then
+	mkdir -p "$FIXTURE_DIR"
+	data="$FIXTURE_DIR/payload.bin"
+	# Deterministic incompressible bytes: AES-256-CTR keystream over zeros.
+	head -c "$DATA_BYTES" /dev/zero \
+		| openssl enc -aes-256-ctr -nosalt -pass pass:validate-rar-large-fixture 2>/dev/null \
+		| head -c "$DATA_BYTES" > "$data"
+	if [[ "$(stat -c%s "$data" 2>/dev/null || echo 0)" -ne "$DATA_BYTES" ]]; then
+		echo "SKIP: rar_large_deep_validation — payload synthesis failed" >&2
+		rm -f "$data"
+		exit 77
+	fi
+	rm -f "$FIXTURE"
+	# -m1 -md32m: real compression method with a 32 MiB dictionary, so the
+	# 1.1 GiB entry is ~35x its window — the exact class the old cap hid.
+	if ! (cd "$FIXTURE_DIR" && "${RAR_CMD[@]}" a -m1 -md32m -ep -idq "$FIXTURE" payload.bin >/dev/null 2>&1); then
+		echo "SKIP: rar_large_deep_validation — rar archiver unavailable or failed" >&2
+		rm -f "$data" "$FIXTURE"
+		exit 77
+	fi
+	rm -f "$data"
+fi
+
+if ! fixture_ok "$FIXTURE"; then
+	echo "FAIL: synthesized archive is under $MIN_BYTES bytes — synthesis assumptions broke"
+	exit 1
+fi
+
+strip_ansi() {
+	sed 's/\x1b\[[0-9;]*m//g'
+}
+
+failures=0
+
+echo "Test 1: >1 GiB RAR deep-validates clean (rc=0, OK, no size-cap warning)"
+raw=$("$BIN" --no-color "$FIXTURE" 2>&1)
+rc=$?
+out=$(printf '%s\n' "$raw" | strip_ansi)
+if [[ "$rc" -ne 0 ]]; then
+	echo "  FAIL: expected rc=0, got rc=$rc"
+	echo "  Output: $out"
+	((failures++)) || true
+elif ! echo "$out" | grep -qE '^OK.*RAR Archive'; then
+	echo "  FAIL: expected OK verdict for clean >1 GiB RAR"
+	echo "  Output: $out"
+	((failures++)) || true
+elif echo "$out" | grep -qi 'too large for deep validation'; then
+	echo "  FAIL: size-cap warning still present — payloads were not verified"
+	echo "  Output: $out"
+	((failures++)) || true
+else
+	echo "  PASS: deep-validated with no size cap"
+fi
+
+if [[ "$failures" -ne 0 ]]; then
+	echo "rar_large_deep_validation failed: $failures"
+	exit "$failures"
+fi
+
+echo "rar_large_deep_validation passed"

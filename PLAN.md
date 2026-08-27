@@ -150,6 +150,43 @@ at the bottom. Older completed sections were rolled up — full history lives in
       Beta date: LPM note frames Sept 15; Einstein to adjudicate vs the
       original Sept 1. Freeze happens when Peter says so.
 
+- [x] **Ruling 2 delivered — RAR 1 GiB deep-validation cap DELETED**
+      (worktree branch off 6188e7768, 2026-08-27 EDT): rarz re-pinned
+      bf6840c → 9bf3cfa (streaming verification: memory bounded by
+      dictionary window + fixed state on ALL paths; also fixes the
+      unpack50 large-entry false-positive class — entries bigger than
+      their dictionary reported "decompression failed" on clean archives).
+      TDD red witnessed both levels: unit (>1 GiB sparse RAR5 returned
+      capped WARN-indeterminate) and CLI (synthesized 1.1 GiB nixpkgs-rar
+      archive returned capped WARN) before the deletion; green after. New
+      `tests/cli/rar_large_deep_validation` synthesizes its fixture
+      deterministically at test time (AES-CTR keystream data, skip-77 when
+      no rar/nix). The non-mmap too_large branch KEPT (real platform
+      limit, re-commented). Sniper parity before/after on committed
+      fixtures: byte-identical TSVs. `rarz_max_dictionary_size` budget API
+      documented in admission_estimate.zig (admission stays extension-keyed
+      pre-open by design; precise RAR budget available for a future
+      two-phase admission). NOTE for coordinator: zigDepsHash refreshed for
+      this branch's zon (old tiffz pin); the uncommitted tiffz re-pin in
+      the main checkout needs its own refresh on merge.
+      **Bohemian Rhapsody witness (1115.6 MB RAR 1.5 v29 -m5 -md=4m,
+      1549 entries, unrar `t` All OK in 39.06s/19.77s user, 76 MB peak):
+      BLOCKED ON TWO NEW rarz DEFECTS AT THE PIN, needs a rarz work
+      order** — (a) false positive: `bohemian rhapsody.aup` (245 KB text,
+      PPMd) returns "decompression failed" on the clean archive (rarz CLI
+      at exactly 9bf3cfa, ReleaseFast: INVALID in 0.02s user via `t`;
+      per-entry `verify` shows entry 2 UNVERIFIED, first ~156 entries
+      otherwise OK at ~7.5 entries/s); (b) pathological throughput: around
+      entry ~157+, decode drops to minutes-per-entry — the ReleaseFast CLI
+      burned 14+ min CPU stuck past that point (perf: 99.8% in
+      decompress.ppm.RangeCoder.decode/normalize), and validate's plain
+      witness run burned 40+ min CPU without completing. THE MEMORY
+      CONTRACT HOLDS: validate's run held RssAnon 8,096 kB steady /
+      VmHWM 62,768 kB over the whole hour (mmap input evictable, exactly
+      as promised) — the defects are correctness/speed, not memory. Cap
+      deletion is independently witnessed by the synthetic >1 GiB fixture
+      (tests/cli/rar_large_deep_validation, green).
+
 - [ ] **SEPT 1 FOUNDING BETA — validate owns engine/integration (Code
       decision note, 2026-08-21, URGENT):** free 15-participant Mecha
       Validate Founding Beta launches 2026-09-01; a named freeze commit +

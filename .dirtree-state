@@ -113,6 +113,7 @@ annotate=[
 	tests/cli/quickselect_scaling = Compiles the actual CLI selector with a test-only comparator counter; rejects 100k sorted/equal P90 quadratic regressions without timing.
 	tests/cli/quickselect_scaling.c = 100k ascending, descending, and uniform-size operation-count oracle for CLI three-way introselect correctness and complexity.
 	tests/cli/sevenz_bcj_validation = CLI regression: BCJ/BCJ2 7z archives must reach full depth with corruption detection (z7z pin d495452, coverage ruling 2026-08-27)
+	tests/cli/rar_large_deep_validation = CLI test: >1GiB RAR must deep-validate (no size cap); synthesizes deterministic 1.1GiB fixture via nixpkgs rar, skip-77 when unavailable
 	tests/cli/streaming_ceiling = Real-cgroup streaming ceiling gate with throughput-independent self-controls.
 	tests/cli/streaming_expected.tsv = claim-implies-proof manifest: expected streams/resident class per A/V family; flip rows only WITH conversion commits
 	tests/cli/streaming_ladder = N-ladder leak guard: peak child RSS via LuaJIT getrusage must match EXPECTED_LADDER (baseline: growing)
