@@ -3101,7 +3101,45 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
 
     var summary = emptyRarzArchiveSummary();
     _ = c_rarz.rarz_verify_archive(archive, &summary);
+
+    // -hp header encryption (rarz 80ec687, rarz_header_encrypted): entries
+    // are not even enumerable without the password. Encryption is a stated
+    // property, never damage — name the specific condition instead of the
+    // generic could-not-verify text (pre-80ec687 rarz misreported this as
+    // header CRC damage; the committed header_encrypted_hp.rar fixture pins
+    // the honest verdict).
+    if (c_rarz.rarz_header_encrypted(archive) != 0) {
+        var encrypted = ValidationResult.okWithDepthAndWarning(
+            .rar,
+            .structural,
+            "RAR header encryption (-hp); entries not enumerable without password",
+        );
+        encrypted.verdict = .indeterminate;
+        encrypted.archive_verification = rarzSummaryToPublic(summary);
+        return encrypted;
+    }
+
     return mapRarzArchiveSummary(summary);
+}
+
+test "header-encrypted (-hp) RAR reports honest encryption WARN, never damage" {
+	// rarz 80ec687: -hp archives previously produced a false "header CRC
+	// mismatch"/INVALID damage claim; now the summary is INCOMPLETE and
+	// rarz_header_encrypted() identifies the cause. validate must surface
+	// the specific honest condition — encryption is not damage, and the
+	// generic could-not-verify text under-informs (Peter: name the error).
+	var source = FileSource.open("tests/fixtures/rar/header_encrypted_hp.rar") catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer source.close();
+	const result = validateRarDeep(std.testing.allocator, &source);
+	try std.testing.expect(result.is_valid); // never a damage verdict
+	try std.testing.expect(result.verdict == .indeterminate);
+	try std.testing.expectEqualStrings(
+		"RAR header encryption (-hp); entries not enumerable without password",
+		result.warning_message orelse return error.TestExpectedEqual,
+	);
 }
 
 test "7z unsupported feature maps to WARN-unsupported, not corrupt" {
@@ -3309,6 +3347,33 @@ test "oversized RAR with corrupt header CRC stays invalid" {
 	try std.testing.expect(!result.is_valid);
 }
 
+/// Probe for RAR -hp header encryption via rarz (rarz_header_encrypted,
+/// 80ec687). Returns the honest indeterminate/WARN result when headers are
+/// encrypted (entries not enumerable without a password — a stated property,
+/// never damage), null when headers are plaintext or the probe cannot run
+/// (open failure falls through to the normal path, which reports it).
+fn probeRarHeaderEncryption(allocator: Allocator, file: *FileSource) ?ValidationResult {
+    const slurp = file.getMappedOrSlurp(allocator, 256 << 20) catch return null;
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return null,
+    };
+    if (data.len == 0) return null;
+    const archive = c_rarz.rarz_open(data.ptr, data.len) orelse return null;
+    defer c_rarz.rarz_close(archive);
+    if (c_rarz.rarz_header_encrypted(archive) == 0) return null;
+    var encrypted = ValidationResult.okWithDepthAndWarning(
+        .rar,
+        .structural,
+        "RAR header encryption (-hp); entries not enumerable without password",
+    );
+    encrypted.verdict = .indeterminate;
+    return encrypted;
+}
+
 /// Deep RAR validation using rarz (in-memory clean-room implementation).
 pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file = source;
@@ -3320,8 +3385,17 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
     }
 
+    // -hp probe MUST precede the independent header walk: encrypted headers
+    // are indistinguishable from damage to a plaintext CRC walk, and the
+    // walk's false reject was exactly the misreport rarz 80ec687 retired.
+    if (probeRarHeaderEncryption(allocator, file)) |encrypted_result| {
+        return encrypted_result;
+    }
+
     // rarz owns entry payload verification, while Validate's independent
     // header walk catches archive-header CRC damage before payload decoding.
+    file.seekTo(0) catch
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "file", .structural);
     const header_result = validateRar(file);
     if (!header_result.is_valid) return header_result;
 

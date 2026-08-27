@@ -128,5 +128,6 @@ annotate=[
 	tests/fixtures/h265_wpp = Synthetic Main10 WPP HEVC fixtures (black 1920x802 x265 + corrupt twin) for the WPP CABAC regression gate
 	tests/fixtures/png_bad_ancillary_crc.png = 85-byte PNG, ancillary tEXt chunk at offset 33 has corrupt CRC (named-malformation-record fixture)
 	tests/fixtures/process_allocator_policy.c = C fixture exercising CLI allocator policy as a set of environment cases
+	tests/fixtures/rar/header_encrypted_hp.rar = committed -hp (header-encrypted) RAR fixture pinning the honest encryption WARN (rarz 80ec687)
 	tests/fixtures/sevenz = Committed synthesized 7z fixtures: BCJ(x86)+LZMA2, BCJ2+3xLZMA, plain LZMA2 control (same x86 ELF object payload)
 ]
