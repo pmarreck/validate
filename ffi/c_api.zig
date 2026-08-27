@@ -267,6 +267,15 @@ fn buildValidationResult(
     // Messages (translated for current locale)
     try builder.add("err", i18n.translateError(result.error_message orelse ""));
     try builder.add("warn", i18n.translateWarning(result.warning_message orelse ""));
+    // Byte coordinate tied to the warning, when the validator knew one
+    // (e.g. JPEG XL strict findings). Empty value = positionless.
+    if (result.warning_offset) |woff| {
+        try builder.addU64("warn_off_u64", woff);
+    } else {
+        try builder.add("warn_off_u64", "");
+    }
+    try builder.addBool("warn_off_exact", result.warning_offset_is_exact);
+    try builder.add("warn_detail", result.warning_detail orelse "");
     try builder.add("info", i18n.translateWarning(result.info_message orelse ""));
 
     // Symbolic error code and detail (for downstream consumers like Entropy Shield)
@@ -308,6 +317,28 @@ fn buildValidationResult(
     }
     try builder.addU64("malform_u64", malform_bits);
     try builder.addU64("info_malform_u64", info_malform_bits);
+
+    // Named malformation records: ordered, bounded (16 + overflow count),
+    // each with type slug, localized description, tier, optional byte offset,
+    // and optional static detail token. Sync first so bare EnumSet inserts
+    // still surface as (positionless) records — the wire invariant.
+    var synced = result;
+    synced.syncMalformationRecords();
+    const recs = &synced.malformation_records;
+    try builder.addU32("mrec_n_u32", recs.len);
+    try builder.addU32("mrec_total_u32", recs.total());
+    for (recs.slice(), 0..) |rec, i| {
+        var key_buf: [24]u8 = undefined;
+        try builder.add(std.fmt.bufPrint(&key_buf, "mrec{d}_type", .{i}) catch unreachable, @tagName(rec.kind));
+        try builder.add(std.fmt.bufPrint(&key_buf, "mrec{d}_desc", .{i}) catch unreachable, rec.kind.description());
+        try builder.addBool(std.fmt.bufPrint(&key_buf, "mrec{d}_info", .{i}) catch unreachable, rec.kind.isInfoTier());
+        if (rec.offset) |off| {
+            try builder.addU64(std.fmt.bufPrint(&key_buf, "mrec{d}_off", .{i}) catch unreachable, off);
+        } else {
+            try builder.add(std.fmt.bufPrint(&key_buf, "mrec{d}_off", .{i}) catch unreachable, "");
+        }
+        try builder.add(std.fmt.bufPrint(&key_buf, "mrec{d}_detail", .{i}) catch unreachable, rec.detail orelse "");
+    }
 
     // Flags as individual booleans
     try builder.addBool("bypass_prot", result.circumvented_trivial_protection);
@@ -364,6 +395,8 @@ fn buildGitResult(
     // No malformations for git
     try builder.addU64("malform_u64", 0);
     try builder.addU64("info_malform_u64", 0);
+    try builder.addU32("mrec_n_u32", 0);
+    try builder.addU32("mrec_total_u32", 0);
 
     // Flags (git repos don't bypass protection or use ffmpeg)
     try builder.addBool("bypass_prot", false);
@@ -2416,6 +2449,25 @@ test "validate single file returns KV-US-RS format" {
     }
 }
 
+
+test "buildValidationResult emits named malformation record keys" {
+    // Pins the mrec_* wire contract (e2e red was witnessed via the CLI gate
+    // tests/cli/malformation_records against the pre-change binary).
+    const allocator = std.testing.allocator;
+    var vres = format_validation.ValidationResult.ok(.png);
+    vres.noteMalformation(.png_ancillary_crc_error, 33);
+    vres.malformations.insert(.extension_mismatch); // bare insert — sync must backfill
+    const kv = try buildValidationResult(allocator, vres, 0);
+    defer allocator.free(kv);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec_n_u32\x1f2\x1e") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec_total_u32\x1f2\x1e") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec0_type\x1fpng_ancillary_crc_error\x1e") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec0_off\x1f33\x1e") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec1_type\x1fextension_mismatch\x1e") != null);
+    try std.testing.expect(std.mem.indexOf(u8, kv, "mrec1_off\x1f\x1e") != null); // positionless: empty
+    // Legacy bitmask still emitted for the deliberate GUI migration window.
+    try std.testing.expect(std.mem.indexOf(u8, kv, "malform_u64\x1f") != null);
+}
 test "FFI result carries NOPERM without corrupting Boolean status fields" {
     var result = format_validation.ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
     result.access = .no_permission;

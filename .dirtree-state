@@ -103,6 +103,7 @@ annotate=[
 	tests/cli/historical_coverage_ledger = TDD fixture for historical raw import semantics: hashes, unknown provenance, empty TSVs, absent modes, and exact-copy deduplication.
 	tests/cli/lercz_license_notice = Checks distributed artifacts retain the LERC Apache-2.0 license and Esri patent NOTICE.
 	tests/cli/libraw_cddl_election = Artifact-aware gate: LibRaw must elect CDDL-1.0 and bundle its exact canonical text.
+	tests/cli/malformation_records = CLI gate: ndjson/json malformations array (type+desc+offset), malformation_count, numeric-bitmask death, human '@ byte N' rendering
 	tests/cli/master_report_drift = Regeneration-idempotence guard: committed corruption-detection-report.md must be byte-identical to scripts/generate-corruption-report output (replaces old hand-audit)
 	tests/cli/no_permission_outcome = CLI integration test: inaccessible paths render and serialize as non-failing NOPERM outcomes.
 	tests/cli/pdf_jbig2_audit_regressions = Checksum-bound CLI regressions for reader-accepted PDF JBIG2 globals warnings.
@@ -117,5 +118,6 @@ annotate=[
 	tests/cli/utf8_required_formats_reject = MFIC set-classifier: every UTF-8-required format (json/csv/toml/xml/html) must reject invalid UTF-8 through the real CLI dispatch (caught CSV silent-pass)
 	tests/cli/v1_capability_contract = Negative-control suite proving dishonest or malformed v1 capability claims are rejected.
 	tests/cli/v1_closure_control = MFIC control-file check: v1_closure.zig sha256 must match blessed_hashes.txt
+	tests/fixtures/png_bad_ancillary_crc.png = 85-byte PNG, ancillary tEXt chunk at offset 33 has corrupt CRC (named-malformation-record fixture)
 	tests/fixtures/process_allocator_policy.c = C fixture exercising CLI allocator policy as a set of environment cases
 ]

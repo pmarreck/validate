@@ -24,6 +24,17 @@
  *                   `decoded-globals byte` after a preprocessing filter.
  *   depth_u8      - Validation depth (0=structural, 1=full)
  *   malform_u64   - Malformation bitset (see malformation constants)
+ *   info_malform_u64 - INFO-tier malformation bitset
+ *   warn_off_u64  - Byte offset tied to warn, when known (empty if positionless)
+ *   warn_off_exact - Boolean: warn_off_u64 is exact (vs host-container approx)
+ *   warn_detail   - Optional static token refining warn (empty if none)
+ *   mrec_n_u32    - Number of named malformation records emitted (<= 16)
+ *   mrec_total_u32 - Total findings incl. overflow beyond the 16-record cap
+ *   mrec<i>_type  - Record i: locale-invariant type slug (enum tag name)
+ *   mrec<i>_desc  - Record i: localized description
+ *   mrec<i>_info  - Record i: boolean, INFO-tier (vs WARN-tier)
+ *   mrec<i>_off   - Record i: absolute byte offset (empty if positionless)
+ *   mrec<i>_detail - Record i: optional static refinement token (empty if none)
  *   bypass_prot   - Boolean: circumvented trivial protection
  *   via_ffmpeg    - Boolean: used external ffmpeg for validation
  *   elapsed_ns_u64 - Elapsed time in nanoseconds
@@ -58,7 +69,7 @@ extern "C" {
 
 /* ABI version */
 #define VALIDATE_ABI_VERSION_MAJOR 2
-#define VALIDATE_ABI_VERSION_MINOR 3
+#define VALIDATE_ABI_VERSION_MINOR 4
 
 /* `validate_batch_sized()` entry value that requests a best-effort stat. */
 #define VALIDATE_BATCH_SIZE_UNKNOWN SIZE_MAX

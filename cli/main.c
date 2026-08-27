@@ -595,6 +595,62 @@ static int64_t kv_get_i64(const char* data, const char* key) {
 	return strtoll(buf, NULL, 10);
 }
 
+/* ========== Named Malformation Records ========== */
+
+/* Mirrors the core MalformationRecords.capacity (keys mrec0.. mrec15). */
+#define MALFORM_REC_MAX 16
+
+typedef struct {
+	char type[64];    /* locale-invariant slug, e.g. "png_ancillary_crc_error" */
+	char desc[256];   /* localized description from the FFI */
+	char detail[128]; /* optional static refinement token (empty if none) */
+	char off[24];     /* decimal byte offset; empty when the finding is positionless */
+	int info;         /* 1 = INFO-tier observation, 0 = WARN-tier deviation */
+} malform_rec_t;
+
+/* Parse the named malformation records from a KV result. Returns the number
+ * of parsed records (<= MALFORM_REC_MAX); *total_out receives the full
+ * finding count including overflow beyond the record cap. */
+static int kv_get_malform_recs(const char* result, malform_rec_t* recs, uint32_t* total_out) {
+	uint32_t n = (uint32_t)kv_get_u64(result, "mrec_n_u32");
+	if (n > MALFORM_REC_MAX) n = MALFORM_REC_MAX;
+	*total_out = (uint32_t)kv_get_u64(result, "mrec_total_u32");
+	char key[32];
+	for (uint32_t i = 0; i < n; i++) {
+		snprintf(key, sizeof(key), "mrec%u_type", (unsigned)i);
+		kv_get_str(result, key, recs[i].type, sizeof(recs[i].type));
+		snprintf(key, sizeof(key), "mrec%u_desc", (unsigned)i);
+		kv_get_str(result, key, recs[i].desc, sizeof(recs[i].desc));
+		snprintf(key, sizeof(key), "mrec%u_detail", (unsigned)i);
+		kv_get_str(result, key, recs[i].detail, sizeof(recs[i].detail));
+		snprintf(key, sizeof(key), "mrec%u_off", (unsigned)i);
+		kv_get_str(result, key, recs[i].off, sizeof(recs[i].off));
+		/* Offsets render unquoted in JSON — accept pure decimal digits only. */
+		if (recs[i].off[0] && strspn(recs[i].off, "0123456789") != strlen(recs[i].off)) {
+			recs[i].off[0] = '\0';
+		}
+		snprintf(key, sizeof(key), "mrec%u_info", (unsigned)i);
+		recs[i].info = kv_get_bool(result, key);
+	}
+	return (int)n;
+}
+
+/* Append one record's human rendering to buf: "desc @ byte N (0xHEX)" when
+ * the offset is known, plain "desc" otherwise. Returns the new position. */
+static int append_malform_rec(char* buf, size_t size, int pos, const malform_rec_t* r, int first) {
+	const char* sep = first ? "" : "; ";
+	if (pos < 0 || (size_t)pos >= size) return pos;
+	if (r->off[0]) {
+		unsigned long long off = strtoull(r->off, NULL, 10);
+		return pos + snprintf(buf + pos, size - (size_t)pos, "%s%s @ byte %llu (0x%llx)",
+			sep, r->desc, off, off);
+	}
+	if (r->detail[0]) {
+		return pos + snprintf(buf + pos, size - (size_t)pos, "%s%s (%s)", sep, r->desc, r->detail);
+	}
+	return pos + snprintf(buf + pos, size - (size_t)pos, "%s%s", sep, r->desc);
+}
+
 /* ========== File Path Collection ========== */
 
 typedef struct {
@@ -1479,7 +1535,15 @@ static void emit_json_result(const char* path, const char* result) {
 
 	int is_valid = kv_get_bool(result, "valid");
 	int depth = (int)kv_get_u64(result, "depth_u8");
-	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
+	malform_rec_t recs[MALFORM_REC_MAX];
+	uint32_t mrec_total = 0;
+	int mrec_n = kv_get_malform_recs(result, recs, &mrec_total);
+	char warn_off[24] = "";
+	kv_get_str(result, "warn_off_u64", warn_off, sizeof(warn_off));
+	if (warn_off[0] && strspn(warn_off, "0123456789") != strlen(warn_off)) warn_off[0] = '\0';
+	int warn_off_exact = kv_get_bool(result, "warn_off_exact");
+	char warn_detail[128] = "";
+	kv_get_str(result, "warn_detail", warn_detail, sizeof(warn_detail));
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
 
@@ -1504,7 +1568,29 @@ static void emit_json_result(const char* path, const char* result) {
 	if (err_msg[0]) { fputs(",\"error\":\"", stdout); json_escape(stdout, err_msg); fputs("\"", stdout); }
 	if (err_code[0]) { fputs(",\"error_code\":\"", stdout); json_escape(stdout, err_code); fputs("\"", stdout); }
 	if (warn_msg[0]) { fputs(",\"warning\":\"", stdout); json_escape(stdout, warn_msg); fputs("\"", stdout); }
-	if (malform_bits) { fprintf(stdout, ",\"malformations\":%llu", (unsigned long long)malform_bits); }
+	if (warn_off[0]) {
+		/* Byte coordinate tied to the warning (e.g. JXL strict finding). */
+		fprintf(stdout, ",\"warning_offset\":%s", warn_off);
+		fprintf(stdout, ",\"warning_offset_exact\":%s", warn_off_exact ? "true" : "false");
+	}
+	if (warn_detail[0]) { fputs(",\"warning_detail\":\"", stdout); json_escape(stdout, warn_detail); fputs("\"", stdout); }
+	/* Named malformation records: array of {type, desc[, detail][, offset][, info]}.
+	 * The old raw-bitmask number under this key is dead — it read as a count. */
+	if (mrec_n > 0) {
+		fputs(",\"malformations\":[", stdout);
+		for (int i = 0; i < mrec_n; i++) {
+			if (i) fputs(",", stdout);
+			fputs("{\"type\":\"", stdout); json_escape(stdout, recs[i].type);
+			fputs("\",\"desc\":\"", stdout); json_escape(stdout, recs[i].desc);
+			fputs("\"", stdout);
+			if (recs[i].detail[0]) { fputs(",\"detail\":\"", stdout); json_escape(stdout, recs[i].detail); fputs("\"", stdout); }
+			if (recs[i].off[0]) { fprintf(stdout, ",\"offset\":%s", recs[i].off); }
+			if (recs[i].info) { fputs(",\"info\":true", stdout); }
+			fputs("}", stdout);
+		}
+		fputs("]", stdout);
+		fprintf(stdout, ",\"malformation_count\":%u", (unsigned)mrec_total);
+	}
 	if (bypass_prot) { fputs(",\"bypassed_protection\":true", stdout); }
 	if (via_ffmpeg) { fputs(",\"via_ffmpeg\":true", stdout); }
 	fputs("}", stdout);
@@ -1532,6 +1618,15 @@ static void print_validation_result(const char* path, const char* result) {
 	uint64_t info_malform_bits = kv_get_u64(result, "info_malform_u64");
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
+
+	/* Named malformation records (with byte offsets); the bitmask stays the
+	 * tier/count source, records are preferred for rendering the details. */
+	malform_rec_t recs[MALFORM_REC_MAX];
+	uint32_t mrec_total = 0;
+	int mrec_n = kv_get_malform_recs(result, recs, &mrec_total);
+	char warn_off[24] = "";
+	kv_get_str(result, "warn_off_u64", warn_off, sizeof(warn_off));
+	if (warn_off[0] && strspn(warn_off, "0123456789") != strlen(warn_off)) warn_off[0] = '\0';
 
 	/* Get depth description from KV result (i18n-translated), fall back to numeric */
 	char depth_str_buf[128];
@@ -1579,13 +1674,26 @@ static void print_validation_result(const char* path, const char* result) {
 			int warn_pos = 0;
 			int first_warn = 1;
 			if (has_malformations) {
-				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
-					if (malform_bits & (1ULL << i)) {
-						const char* desc = validate_malform_desc(i);
-						if (desc) {
-							warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
-								"%s%s", first_warn ? "" : "; ", desc);
-							first_warn = 0;
+				if (mrec_n > 0) {
+					for (int i = 0; i < mrec_n; i++) {
+						if (recs[i].info) continue;
+						warn_pos = append_malform_rec(warn_details, sizeof(warn_details), warn_pos, &recs[i], first_warn);
+						first_warn = 0;
+					}
+					if (mrec_total > (uint32_t)mrec_n && warn_pos >= 0 && (size_t)warn_pos < sizeof(warn_details)) {
+						warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+							"; +%u more finding(s)", (unsigned)(mrec_total - (uint32_t)mrec_n));
+					}
+				} else {
+					/* Fallback: results without records (e.g. git) render from the bitmask. */
+					for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+						if (malform_bits & (1ULL << i)) {
+							const char* desc = validate_malform_desc(i);
+							if (desc) {
+								warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+									"%s%s", first_warn ? "" : "; ", desc);
+								first_warn = 0;
+							}
 						}
 					}
 				}
@@ -1593,16 +1701,27 @@ static void print_validation_result(const char* path, const char* result) {
 			if (has_warning) {
 				warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
 					"%s%s", first_warn ? "" : "; ", warn_msg);
+				if (warn_off[0] && warn_pos >= 0 && (size_t)warn_pos < sizeof(warn_details)) {
+					warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+						" @ byte %s", warn_off);
+				}
 			}
 			/* INFO notes (malformation bits + free-form text) tag onto WARN row
 			 * when both present — deviation outranks observation. */
 			if (has_info_malformations) {
-				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
-					if (info_malform_bits & (1ULL << i)) {
-						const char* desc = validate_malform_desc(i);
-						if (desc) {
-							warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
-								"; %s", desc);
+				if (mrec_n > 0) {
+					for (int i = 0; i < mrec_n; i++) {
+						if (!recs[i].info) continue;
+						warn_pos = append_malform_rec(warn_details, sizeof(warn_details), warn_pos, &recs[i], 0);
+					}
+				} else {
+					for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+						if (info_malform_bits & (1ULL << i)) {
+							const char* desc = validate_malform_desc(i);
+							if (desc) {
+								warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+									"; %s", desc);
+							}
 						}
 					}
 				}
@@ -1624,13 +1743,21 @@ static void print_validation_result(const char* path, const char* result) {
 			int info_pos = 0;
 			int first_info = 1;
 			if (has_info_malformations) {
-				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
-					if (info_malform_bits & (1ULL << i)) {
-						const char* desc = validate_malform_desc(i);
-						if (desc) {
-							info_pos += snprintf(info_details + info_pos, sizeof(info_details) - info_pos,
-								"%s%s", first_info ? "" : "; ", desc);
-							first_info = 0;
+				if (mrec_n > 0) {
+					for (int i = 0; i < mrec_n; i++) {
+						if (!recs[i].info) continue;
+						info_pos = append_malform_rec(info_details, sizeof(info_details), info_pos, &recs[i], first_info);
+						first_info = 0;
+					}
+				} else {
+					for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+						if (info_malform_bits & (1ULL << i)) {
+							const char* desc = validate_malform_desc(i);
+							if (desc) {
+								info_pos += snprintf(info_details + info_pos, sizeof(info_details) - info_pos,
+									"%s%s", first_info ? "" : "; ", desc);
+								first_info = 0;
+							}
 						}
 					}
 				}
@@ -1658,12 +1785,19 @@ static void print_validation_result(const char* path, const char* result) {
 		fail_pos += snprintf(fail_details, sizeof(fail_details), "%s",
 			err_msg[0] ? err_msg : "Unknown error");
 		if (has_malformations) {
-			for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
-				if (malform_bits & (1ULL << i)) {
-					const char* desc = validate_malform_desc(i);
-					if (desc) {
-						fail_pos += snprintf(fail_details + fail_pos, sizeof(fail_details) - fail_pos,
-							"; %s", desc);
+			if (mrec_n > 0) {
+				for (int i = 0; i < mrec_n; i++) {
+					if (recs[i].info) continue;
+					fail_pos = append_malform_rec(fail_details, sizeof(fail_details), fail_pos, &recs[i], 0);
+				}
+			} else {
+				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+					if (malform_bits & (1ULL << i)) {
+						const char* desc = validate_malform_desc(i);
+						if (desc) {
+							fail_pos += snprintf(fail_details + fail_pos, sizeof(fail_details) - fail_pos,
+								"; %s", desc);
+						}
 					}
 				}
 			}

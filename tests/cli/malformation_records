@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Named malformation records in CLI output (Peter's 2026-08-27 ruling: a
+# validator must NAME each malformation and give its byte offset when known).
+#
+# Contract under test:
+#   - ndjson/json "malformations" is an ARRAY of {type, desc[, offset][, info]}
+#     objects — the old raw-bitmask number under that key MUST be gone (the
+#     GUI rendered bitmask 4 as "4 malformation(s)"; that misreading dies here).
+#   - "malformation_count":N rides alongside (N includes any overflow beyond
+#     the 16-record cap).
+#   - Positionless findings (extension_mismatch) omit the offset key entirely;
+#     offsets are never fabricated.
+#   - Human output renders the offset ("@ byte N").
+#
+# Fixture: tests/fixtures/png_bad_ancillary_crc.png — minimal 85-byte PNG whose
+# ancillary tEXt chunk at byte offset 33 has a corrupted CRC (regenerable; see
+# the layout comment there: sig(8) IHDR(25) tEXt(15) IDAT(25) IEND(12)).
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+case "$VALIDATE_BIN" in
+	/*) ;;
+	*) VALIDATE_BIN="$(cd "$(dirname "$VALIDATE_BIN")" && pwd)/$(basename "$VALIDATE_BIN")" ;;
+esac
+
+FIXTURE="$PROJECT_ROOT/tests/fixtures/png_bad_ancillary_crc.png"
+if [ ! -f "$FIXTURE" ]; then
+	echo "FAIL: committed fixture missing: $FIXTURE" >&2
+	exit 1
+fi
+
+failures=0
+pass() { echo "PASS: $1"; }
+fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
+
+# --- ndjson: named record with offset -------------------------------------
+out=$("$VALIDATE_BIN" --ndjson "$FIXTURE" 2>/dev/null)
+
+if printf '%s' "$out" | grep -q '"valid":true'; then
+	pass "fixture is valid (WARN-tier malformation, not corruption)"
+else
+	fail "expected valid:true :: $out"
+fi
+
+if printf '%s' "$out" | grep -q '"malformations":\[{"type":"png_ancillary_crc_error","desc":"[^"]*","offset":33}\]'; then
+	pass "ndjson names the malformation with desc and offset 33"
+else
+	fail "ndjson malformations array missing/wrong :: $out"
+fi
+
+if printf '%s' "$out" | grep -q '"malformation_count":1'; then
+	pass "ndjson carries malformation_count:1"
+else
+	fail "malformation_count missing :: $out"
+fi
+
+# The old raw-bitmask numeric field is dead. Any bare number after the key is
+# the bug that made the GUI read bitmask 4 as a count.
+if printf '%s' "$out" | grep -Eq '"malformations":[0-9]'; then
+	fail "old numeric bitmask \"malformations\":N still emitted :: $out"
+else
+	pass "old numeric bitmask field is gone"
+fi
+
+# --- json array mode: same shape ------------------------------------------
+out_json=$("$VALIDATE_BIN" --json "$FIXTURE" 2>/dev/null)
+if printf '%s' "$out_json" | grep -q '"malformations":\[{"type":"png_ancillary_crc_error"'; then
+	pass "--json array mode uses the same named shape"
+else
+	fail "--json mode missing named malformations :: $out_json"
+fi
+
+# --- positionless finding omits the offset key -----------------------------
+W="$(mktemp -d "${TMPDIR:-/tmp}/malform_records.XXXXXX")"
+trap 'rm -rf "$W"' EXIT
+cp "$FIXTURE" "$W/masquerade.jpg"
+out_ext=$("$VALIDATE_BIN" --ndjson "$W/masquerade.jpg" 2>/dev/null)
+if printf '%s' "$out_ext" | grep -q '"type":"extension_mismatch"'; then
+	pass "extension_mismatch surfaces as a named record"
+else
+	fail "extension_mismatch record missing :: $out_ext"
+fi
+if printf '%s' "$out_ext" | grep -Eq '"type":"extension_mismatch","desc":"[^"]*","offset"'; then
+	fail "extension_mismatch fabricated an offset :: $out_ext"
+else
+	pass "positionless record omits the offset key"
+fi
+if printf '%s' "$out_ext" | grep -q '"malformation_count":2'; then
+	pass "both findings counted (CRC + extension mismatch)"
+else
+	fail "expected malformation_count:2 :: $out_ext"
+fi
+
+# --- human output renders the offset ---------------------------------------
+out_human=$("$VALIDATE_BIN" --no-color "$FIXTURE" 2>&1)
+if printf '%s' "$out_human" | grep -q '@ byte 33'; then
+	pass "human output renders '@ byte 33'"
+else
+	fail "human output missing offset rendering :: $out_human"
+fi
+
+if [ "$failures" -gt 0 ]; then
+	echo "$failures failure(s)" >&2
+	exit 1
+fi
+echo "All malformation-record CLI assertions passed"
