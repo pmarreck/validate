@@ -590,6 +590,27 @@ fn parsePps(rbsp: []const u8) ?PictureParameterSet {
     var reader = BitReader.init(rbsp);
     var pps: PictureParameterSet = undefined;
 
+    // Initialize conditionally-parsed/extended fields to their spec defaults.
+    // `= undefined` does NOT apply struct-declaration defaults, and several
+    // of these fields are only written when their presence flag is set (e.g.
+    // deblocking_filter_override_enabled_flag when
+    // deblocking_filter_control_present_flag == 1). Without this block the
+    // slice header parser branched on undefined memory, which read as 0 in
+    // ReleaseFast builds and garbage in ReleaseSafe builds — the same stream
+    // parsed to header_bits=96 or header_bits=32 depending on optimize mode.
+    pps.diff_cu_qp_delta_depth = 0;
+    pps.transquant_bypass_enabled_flag = false;
+    pps.tiles_enabled_flag = false;
+    pps.entropy_coding_sync_enabled_flag = false;
+    pps.pps_slice_chroma_qp_offsets_present_flag = false;
+    pps.pps_loop_filter_across_slices_enabled_flag = false;
+    pps.deblocking_filter_control_present_flag = false;
+    pps.deblocking_filter_override_enabled_flag = false;
+    pps.pps_deblocking_filter_disabled_flag = false;
+    pps.slice_segment_header_extension_present_flag = false;
+    pps.has_slice_header_deps = false;
+    pps.has_extended_fields = false;
+
     // pps_pic_parameter_set_id: ue(v)
     pps.pps_pic_parameter_set_id = reader.readExpGolomb() orelse return null;
     if (pps.pps_pic_parameter_set_id > 63) return null;
@@ -1822,4 +1843,73 @@ test "H.265 hasAnnexBStartCode" {
     try std.testing.expect(!hasAnnexBStartCode(&[_]u8{ 0x00, 0x00, 0x02 }));
     try std.testing.expect(!hasAnnexBStartCode(&[_]u8{ 0x00, 0x01 }));
     try std.testing.expect(!hasAnnexBStartCode(&[_]u8{}));
+}
+
+/// Fill a large stack frame with 0xFF so a subsequently-called function's
+/// locals land on poisoned memory. Used to make reads of uninitialized
+/// struct fields deterministic (nonzero) in tests instead of luck-of-the-
+/// stack. noinline so the frame really overlaps the callee's future frame.
+noinline fn dirtyStack() void {
+	var buf: [8192]u8 = undefined;
+	@memset(&buf, 0xFF);
+	std.mem.doNotOptimizeAway(&buf);
+}
+
+test "H.265 WPP slice header parses to byte-exact CABAC entry (regression: build-mode-dependent misparse)" {
+	// NAL bodies extracted verbatim from the committed fixture
+	// tests/fixtures/h265_wpp/wpp_main10_black.mp4 (x265 Main10, 1920x802,
+	// wpp=1, ctu=64 -> 30x13 CTBs, 13 WPP rows -> 12 entry points).
+	// Ground truth: instrumented libde265 (dec265 -vvv) initializes the
+	// slice CABAC engine at RBSP byte 12 (bytes c3 13 ...), i.e. the slice
+	// segment header is exactly 96 bits: 9 bits through slice_qp_delta,
+	// 1 bit slice_loop_filter_across_slices, ue(12) num_entry_point_offsets,
+	// ue(5) offset_len_minus1, 12x u(6) offsets, then byte_alignment.
+	// A previous binary (same source, different optimize mode) reported
+	// header_bits=32 here, which desynced every CABAC bin thereafter.
+	const sps_body = [_]u8{
+		0x01, 0x02, 0x20, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00,
+		0x00, 0x03, 0x00, 0x78, 0xa0, 0x03, 0xc0, 0x80, 0x32, 0x9f, 0x23, 0x65,
+		0x95, 0x9a, 0x49, 0x30, 0xbc, 0x05, 0xa0, 0x20, 0x00, 0x00, 0x03, 0x00,
+		0x20, 0x00, 0x00, 0x03, 0x03, 0x01,
+	};
+	const pps_body = [_]u8{ 0xc1, 0x72, 0xb4, 0x62, 0x40 };
+	// First 24 bytes of the IDR_N_LP slice body (header region only; no
+	// emulation-prevention bytes occur in the first 24 bytes).
+	const slice_prefix = [_]u8{
+		0xad, 0x46, 0x9a, 0xb8, 0x5f, 0x75, 0xc6, 0xdb, 0x6d, 0xa6, 0x9a, 0x6a,
+		0xc3, 0x13, 0x07, 0xff, 0xfe, 0x21, 0x4f, 0x92, 0x53, 0x49, 0xce, 0x52,
+	};
+
+	var sps_buf: [64]u8 = undefined;
+	var pps_buf: [16]u8 = undefined;
+	const sps_rbsp = removeEmulationPreventionBytes(&sps_body, &sps_buf).?;
+	const pps_rbsp = removeEmulationPreventionBytes(&pps_body, &pps_buf).?;
+
+	const sps = parseSps(sps_rbsp) orelse return error.SpsParseFailed;
+	// Dirty the stack region parsePps will occupy so any field it leaves
+	// uninitialized reads as nonzero garbage instead of lucky zeros. This
+	// makes the branch-on-undefined bug (PPS fields skipped when their
+	// presence flag is 0) fail deterministically rather than only in some
+	// build modes / stack states.
+	dirtyStack();
+	const pps = parsePps(pps_rbsp) orelse return error.PpsParseFailed;
+
+	// Stream facts (cross-checked against ffprobe + dec265). Note the SPS
+	// codes the pre-conformance-window height 808 (must be a multiple of
+	// MinCbSizeY=8); the display height 802 comes from the crop window.
+	try std.testing.expectEqual(@as(u32, 1920), sps.pic_width_in_luma_samples);
+	try std.testing.expectEqual(@as(u32, 808), sps.pic_height_in_luma_samples);
+	try std.testing.expect(sps.has_extended_fields);
+	try std.testing.expect(!sps.sample_adaptive_offset_enabled_flag);
+	try std.testing.expect(pps.has_extended_fields);
+	try std.testing.expect(pps.entropy_coding_sync_enabled_flag);
+	try std.testing.expect(!pps.tiles_enabled_flag);
+	try std.testing.expect(pps.cu_qp_delta_enabled_flag);
+	try std.testing.expect(pps.has_slice_header_deps);
+
+	const info = parseFullSliceSegmentHeader(&slice_prefix, .IDR_N_LP, &sps, &pps) orelse
+		return error.SliceHeaderParseFailed;
+	try std.testing.expectEqual(@as(u32, 2), info.slice_type);
+	try std.testing.expect(info.header_fully_parsed);
+	try std.testing.expectEqual(@as(usize, 96), info.header_bits);
 }
