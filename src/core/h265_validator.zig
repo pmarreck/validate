@@ -1378,7 +1378,19 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     const overshoot = result.ctus_decoded > expected_ctus;
                                     const immediate_fail = !result.engine_valid and result.ctus_decoded == 0;
                                     const mid_slice_fail = !result.engine_valid and result.ctus_decoded > 0 and result.ctus_decoded < expected_ctus;
-                                    if (overshoot or immediate_fail or mid_slice_fail) {
+                                    // (d) complete-but-unterminated: all expected CTUs decoded but
+                                    // the final end_of_slice_segment_flag terminate bin never fired.
+                                    // A conformant slice ALWAYS terminates cleanly at its last CTU
+                                    // (verified bin-exact vs libde265 on clean x265 streams,
+                                    // 2026-08-27); an arithmetic stream corrupted mid-residuals can
+                                    // re-sync into legal-looking syntax for every CTU yet leave the
+                                    // engine out of step here — witnessed: 8-byte corruption in
+                                    // tests/fixtures/h265_residual/textured_main10_aq_corrupt.mp4
+                                    // decodes 4/4 CTUs but ends terminated_cleanly=false with 2615
+                                    // stray bits (clean twin: terminated cleanly, 2 bits).
+                                    const unterminated_complete = result.engine_valid and
+                                        result.ctus_decoded >= expected_ctus and !result.terminated_cleanly;
+                                    if (overshoot or immediate_fail or mid_slice_fail or unterminated_complete) {
                                         cabac_anomalies += 1;
                                     }
                                     // Diagnostic only — see cabac_premature_term declaration for rationale.

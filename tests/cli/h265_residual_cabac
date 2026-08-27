@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Regression: H.265 CABAC residual-coding divergence class (NEXT_STEPS 4g/4h/4i,
+# witnessed 2026-08-26 on an x265 BluRay rip whose textured CTUs desynced
+# mid-residuals). Closed 2026-08-27 via instrumented-libde265 bin-trace diff:
+# five decoder defects fixed (transposed up-right diagonal scan tables per
+# spec 6.5.3; cu_qp_delta once per quantization group per 7.3.8.4/7.3.8.10;
+# wrong last_sig_coeff prefix ctxShift per 9.3.4.2.3; wrong initType-0 CABAC
+# init values for last_sig prefixes + chroma sig_coeff_flag; missing chroma
+# +16/+4 context offsets for coeff_abs_level_greater1/2; mode-based scan
+# wrongly applied to chroma 8x8 TBs per 7.4.9.11) plus a PPS parse that
+# branched on undefined memory. After the fixes the clean fixture decodes
+# bin-exactly (verified against dec265 -vvv: all 17614 bins identical).
+#
+# Fixture provenance (synthetic, committed — no third-party media):
+#   ffmpeg -f lavfi -i testsrc2=size=128x128:rate=24 -frames:v 1 \
+#     -pix_fmt yuv420p10le -c:v libx265 \
+#     -x265-params wpp=1:ctu=64:sao=0:signhide=1:crf=22:log-level=error \
+#     -tag:v hvc1 textured_main10_aq.mp4
+# testsrc2 is textured content; x265's default aq-mode/cutree enable
+# cu_qp_delta (diff_cu_qp_delta_depth=1), exercising the QG gate. 2x2 CTUs,
+# 2 WPP rows, one IDR slice, 16256 RBSP bits.
+#
+# Corrupt twin provenance: clean fixture with 8 bytes at slice-payload offset
+# 400 (file offset 449, deep in CABAC residual data) replaced by
+# (b+0xA5) mod 256. The corrupted arithmetic stream still decodes as legal
+# syntax for all 4 CTUs but desyncs the bit accounting: the slice ends with
+# terminated_cleanly=false and 2615 unconsumed bits (clean: terminated
+# cleanly, 2 alignment bits left) — the complete-but-unterminated anomaly.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+if [[ ! -x "$VALIDATE_BIN" ]]; then
+	echo "FAIL: validate binary not found at $VALIDATE_BIN"
+	exit 1
+fi
+
+FIX="$PROJECT_ROOT/tests/fixtures/h265_residual"
+CLEAN="$FIX/textured_main10_aq.mp4"
+CORRUPT="$FIX/textured_main10_aq_corrupt.mp4"
+
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+failures=0
+
+if [[ ! -f "$CLEAN" ]]; then
+	echo "FAIL: missing committed fixture $CLEAN"
+	exit 1
+fi
+
+out="$("$VALIDATE_BIN" "$CLEAN" 2>&1 | strip_ansi)"
+line="$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|WARN|UNKNOWN)' | head -1)"
+if [[ "$line" == OK* ]]; then
+	echo "PASS: clean textured Main10 stream -> $line"
+else
+	echo "FAIL: clean textured Main10 stream must be OK (zero CABAC anomalies), got: $line"
+	failures=$((failures + 1))
+fi
+
+if [[ -f "$CORRUPT" ]]; then
+	out="$("$VALIDATE_BIN" "$CORRUPT" 2>&1 | strip_ansi)"
+	line="$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|WARN|UNKNOWN)' | head -1)"
+	if [[ "$line" == WARN* || "$line" == FAIL* ]]; then
+		echo "PASS: corrupt residual data detected -> $line"
+	else
+		echo "FAIL: corrupt residual data must be WARN/FAIL, got: $line"
+		failures=$((failures + 1))
+	fi
+else
+	echo "FAIL: missing committed fixture $CORRUPT"
+	failures=$((failures + 1))
+fi
+
+if (( failures > 0 )); then
+	echo "h265_residual_cabac: $failures failure(s)"
+	exit 1
+fi
+echo "h265_residual_cabac: all passed"
