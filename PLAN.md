@@ -89,6 +89,30 @@ at the bottom. Older completed sections were rolled up — full history lives in
       downgraded to post-freeze (GUI interim lercz link documented;
       tiffz still unresponsive, re-pinged 2026-08-26).
 
+- [ ] **EOD 2026-08-27 status of the coverage rulings (pushed @ 39d738e11):**
+      LANDED today: tiffz ac381e64 (LERC+zstd link closure owned by the
+      installed archive, consumer regression tests/cli/lerc_link_closure;
+      CR2 deep with code-16 WARN, matrix row partial->deep mechanically);
+      named malformation records + offsets end-to-end (ndjson shape
+      break, GUI migration notes sent); H.265 WPP CABAC false-positive
+      fix (residual-coding divergence class remains, next lever =
+      libde265 bin-trace diff, NEXT_STEPS 4g-i); 7z BCJ/BCJ2 full-depth
+      streaming (sniper 3/150 -> 150/150). HOLDING: rarz re-pin + RAR
+      cap deletion (agent work complete on branch
+      worktree-agent-a29a025bf6b0e62ef; blocked on rarz clean-room PPMd
+      variant H rewrite — their stub PPMd false-positives on RAR3 text +
+      is the throughput cliff, both witnessed on the 1115MB local
+      archive; memory contract PROVEN: 8MB RssAnon under 512M ceiling).
+      IN FLIGHT elsewhere: libjxlz VarDCT+patches (Samson.jxl named),
+      fine-grained JXL finding details (detail seam reserved in the
+      malformation records). FOLLOW-UPS (non-blocking, filed): nested
+      libz.a pseudo-member in merged archive (derive merge inputs from
+      module graph; MRI ADDLIB flatten); .mobi missing from
+      expected-extension map; Debug-mode compiler SEGV at current tiffz
+      pin (courtesy repro owed to tiffz); sign-binary null-byte warning;
+      code-13/16 payload rendering in WARN messages; archive families
+      into the ceiling harness (rar row lands with the rarz re-pin).
+
 - [ ] **FREEZE POSTPONED (Peter, 2026-08-27 12:27 EDT): "We are not
       freezing yet. These fixes are urgent pre-launch items."** Three
       coverage rulings from Peter today, all launch-critical:
