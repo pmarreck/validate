@@ -93,26 +93,50 @@ end
 
 local resolver = os.getenv("VALIDATE_DEP_RESOLVER_CMD")
 local sibling_root = os.getenv("VALIDATE_SIBLING_ROOT") or (os.getenv("HOME") .. "/Code")
+-- Oracle order (Peter, 2026-08-27): default sibling-first — the local
+-- checkout under ~/Code/<repo-basename> is the freshest truth on the fleet's
+-- home box (unpushed work counts), with the network as fallback for repos
+-- with no local checkout or undecidable ancestry. remote-first restores
+-- network authority (e.g. a runner with no checkouts).
+local oracle = os.getenv("VALIDATE_DEP_ORACLE") or "sibling-first"
+if oracle ~= "sibling-first" and oracle ~= "remote-first" then
+	die("VALIDATE_DEP_ORACLE must be sibling-first or remote-first, got: " .. oracle)
+end
 local announced_local_fallback = false
 
--- Offline oracle (Peter, 2026-08-27): when the upstream is unreachable, the
--- local sibling checkout under ~/Code/<repo-basename> stands in — presumed
--- current by fleet convention (a stated assumption, not a verified one).
-local function sibling_head(upstream_url)
-	local base = upstream_url:match("([^/]+)$")
-	if not base then return nil end
-	base = base:gsub("%.git$", "")
-	local dir = sibling_root .. "/" .. base
-	local p = io.popen(string.format("git -C '%s' rev-parse HEAD 2>/dev/null", dir), "r")
+local function shell_line(cmd)
+	local p = io.popen(cmd, "r")
 	if not p then return nil end
 	local out = (p:read("*a") or ""):match("(%x+)")
 	local ok = p:close()
-	if not ok or not out or #out ~= 40 then return nil end
-	if not announced_local_fallback then
-		io.stderr:write("Internet unavailable; relying on local repository state\n")
-		announced_local_fallback = true
-	end
+	if not ok then return nil end
 	return out
+end
+
+local function sibling_dir(upstream_url)
+	local base = upstream_url:match("([^/]+)$")
+	if not base then return nil end
+	return sibling_root .. "/" .. base:gsub("%.git$", "")
+end
+
+local function sibling_head(upstream_url)
+	local dir = sibling_dir(upstream_url)
+	if not dir then return nil end
+	local out = shell_line(string.format("git -C '%s' rev-parse HEAD 2>/dev/null", dir))
+	if not out or #out ~= 40 then return nil end
+	return out, dir
+end
+
+-- true / false / nil(undecidable: sha unknown to the sibling's object store)
+local function is_ancestor(dir, maybe_ancestor, descendant)
+	local have = os.execute(string.format(
+		"git -C '%s' cat-file -e %s 2>/dev/null && git -C '%s' cat-file -e %s 2>/dev/null",
+		dir, maybe_ancestor, dir, descendant))
+	if have ~= 0 and have ~= true then return nil end
+	local rc = os.execute(string.format(
+		"git -C '%s' merge-base --is-ancestor %s %s 2>/dev/null",
+		dir, maybe_ancestor, descendant))
+	return rc == 0 or rc == true
 end
 
 local function upstream_head(upstream_url)
@@ -144,14 +168,49 @@ for _, d in ipairs(deps) do
 			unpinned[#unpinned + 1] = d.name
 			io.stderr:write(string.format("UNPINNED    %-14s url has no commit pin (advisory): %s\n", d.name, d.url))
 		else
-			local head = upstream_head(upstream) or sibling_head(upstream)
+			local head, verdict_src
+			if oracle == "sibling-first" then
+				local shead, sdir = sibling_head(upstream)
+				if shead then
+					if shead == sha then
+						head, verdict_src = sha, "sibling" -- fresh
+					else
+						local pin_behind = is_ancestor(sdir, sha, shead)
+						local pin_ahead = is_ancestor(sdir, shead, sha)
+						if pin_behind == true then
+							head, verdict_src = shead, "sibling"
+						elseif pin_ahead == true then
+							-- Pin is newer than the local checkout: fresh, advise.
+							head, verdict_src = sha, "sibling"
+							io.stderr:write(string.format(
+								"SIBLING BEHIND %-11s local checkout is behind your pin and needs a pull: %s\n",
+								d.name, sdir))
+						end
+						-- undecidable ancestry: fall through to remote below
+					end
+				end
+			end
+			if not head then
+				head = upstream_head(upstream)
+				verdict_src = head and "remote" or nil
+			end
+			if not head and oracle == "remote-first" then
+				local shead = sibling_head(upstream)
+				if shead then
+					if not announced_local_fallback then
+						io.stderr:write("Internet unavailable; relying on local repository state\n")
+						announced_local_fallback = true
+					end
+					head, verdict_src = shead, "sibling"
+				end
+			end
 			if not head then
 				unreachable[#unreachable + 1] = d.name
 				io.stderr:write(string.format("UNREACHABLE %-14s cannot resolve upstream head (advisory, offline?)\n", d.name))
 			elseif head ~= sha then
 				stale[#stale + 1] = { name = d.name, pinned = sha, head = head, upstream = upstream }
-				io.stderr:write(string.format("STALE       %-14s pinned %s.. upstream %s..  %s\n",
-					d.name, sha:sub(1, 12), head:sub(1, 12), d.upstream or upstream))
+				io.stderr:write(string.format("STALE       %-14s pinned %s.. %s head %s..  %s\n",
+					d.name, sha:sub(1, 12), verdict_src or "upstream", head:sub(1, 12), upstream))
 			end
 		end
 	end

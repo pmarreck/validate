@@ -136,8 +136,8 @@ cat > "$work/local.zon" <<EOF
     },
 }
 EOF
-out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver" VALIDATE_SIBLING_ROOT="$sib" \
-	"$CHECK" --zon "$work/local.zon" 2>&1)"; rc=$?
+out="$(env VALIDATE_DEP_ORACLE=remote-first VALIDATE_DEP_RESOLVER_CMD="$work/resolver" \
+	VALIDATE_SIBLING_ROOT="$sib" "$CHECK" --zon "$work/local.zon" 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] || fail "locally-stale dep must fail the check (got rc=0): $out"
 printf '%s' "$out" | grep -q "Internet unavailable; relying on local repository state" \
 	|| fail "missing the local-fallback notice: $out"
@@ -147,7 +147,77 @@ if printf '%s' "$out" | grep -Eq "STALE.*localfresh|UNREACHABLE.*localfresh"; th
 fi
 printf '%s' "$out" | grep -q "${ls_head:0:12}" || fail "sibling head SHA missing from stale report"
 
-# --- 6. all-fresh zon: exit 0, silent on stdout success path ---------------
+# --- 6. oracle order (VALIDATE_DEP_ORACLE) ---------------------------------
+# sibling-first (default): sibling head is consulted before any network.
+#   (a) sibling AHEAD of pin (pin is ancestor of sibling head) -> STALE,
+#       even though the resolver would have said fresh (unpushed work wins).
+#   (b) pin AHEAD of sibling (pin is descendant; sibling needs a pull) ->
+#       fresh + advisory, NOT stale.
+# remote-first: resolver wins; sibling only on network failure (case 5).
+sib2="$work/siblings2"; mkdir -p "$sib2"
+git -C "$sib2" init -q aheadrepo
+git -C "$sib2/aheadrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+pin_old="$(git -C "$sib2/aheadrepo" rev-parse HEAD)"
+git -C "$sib2/aheadrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+sib_new="$(git -C "$sib2/aheadrepo" rev-parse HEAD)"
+
+mkzon() { # mkzon <path> <pin>
+	cat > "$1" <<EOF
+.{
+    .name = .synthetic,
+    .version = "0.0.1",
+    .dependencies = .{
+        .aheadrepo = .{
+            .url = "git+https://example.test/o/aheadrepo#$2",
+            .hash = "aheadrepo-0.0.1-AAAA",
+        },
+    },
+}
+EOF
+}
+# Resolver that claims the REMOTE head equals whatever pin we give it (so
+# remote-first sees fresh) — proving sibling-first overrides it.
+cat > "$work/resolver2" <<EOF
+#!/usr/bin/env bash
+echo "$pin_old"
+EOF
+chmod +x "$work/resolver2"
+
+# (a) pin is the OLD commit; sibling has newer -> sibling-first says STALE.
+mkzon "$work/ahead.zon" "$pin_old"
+out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver2" VALIDATE_SIBLING_ROOT="$sib2" \
+	"$CHECK" --zon "$work/ahead.zon" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "sibling-first must flag unpushed sibling work as stale: $out"
+printf '%s' "$out" | grep -Eq "STALE.*aheadrepo" || fail "aheadrepo not STALE sibling-first: $out"
+printf '%s' "$out" | grep -q "${sib_new:0:12}" || fail "sibling head SHA missing: $out"
+
+# (a2) same zon, remote-first: resolver says fresh -> passes.
+out="$(env VALIDATE_DEP_ORACLE=remote-first VALIDATE_DEP_RESOLVER_CMD="$work/resolver2" \
+	VALIDATE_SIBLING_ROOT="$sib2" "$CHECK" --zon "$work/ahead.zon" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "remote-first must trust the resolver (got $rc): $out"
+
+# (b) pin is the NEW commit, sibling head is... make sibling behind by
+# resetting a clone: reuse repo — check out old commit into a second repo dir.
+git -C "$sib2" init -q behindrepo
+git -C "$sib2/behindrepo" fetch -q "$sib2/aheadrepo" HEAD
+git -C "$sib2/behindrepo" -c advice.detachedHead=false checkout -q "$pin_old"
+mkzon "$work/behind.zon" "$sib_new"
+cat > "$work/resolver3" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$work/resolver3"
+# Rename dep so basename maps to behindrepo
+sed -i "s/aheadrepo/behindrepo/g" "$work/behind.zon"
+# behindrepo's objects must contain the pin to prove descendance:
+git -C "$sib2/behindrepo" fetch -q "$sib2/aheadrepo" HEAD
+out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver3" VALIDATE_SIBLING_ROOT="$sib2" \
+	"$CHECK" --zon "$work/behind.zon" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "pin ahead of sibling must be fresh-with-advisory (got $rc): $out"
+printf '%s' "$out" | grep -Eq "SIBLING BEHIND|sibling.*behind|needs a pull" \
+	|| fail "pin-ahead case must advise the sibling needs a pull: $out"
+
+# --- 7. all-fresh zon: exit 0, silent on stdout success path ---------------
 cat > "$work/fresh.zon" <<EOF
 .{
     .name = .synthetic,
