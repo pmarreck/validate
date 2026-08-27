@@ -121,12 +121,18 @@ at the bottom. Older completed sections were rolled up — full history lives in
       break, GUI migration notes sent); H.265 WPP CABAC false-positive
       fix (residual-coding divergence class remains, next lever =
       libde265 bin-trace diff, NEXT_STEPS 4g-i); 7z BCJ/BCJ2 full-depth
-      streaming (sniper 3/150 -> 150/150). HOLDING: rarz re-pin + RAR
-      cap deletion (agent work complete on branch
-      worktree-agent-a29a025bf6b0e62ef; blocked on rarz clean-room PPMd
-      variant H rewrite — their stub PPMd false-positives on RAR3 text +
-      is the throughput cliff, both witnessed on the 1115MB local
-      archive; memory contract PROVEN: 8MB RssAnon under 512M ceiling).
+      streaming (sniper 3/150 -> 150/150). LANDED same day @ d5f336cbf:
+      RAR 1GiB cap DELETED + rarz 3ddbbdd (their same-day clean-room
+      PPMd variant H rewrite; stub PPMd + misparsed init byte was both
+      the false positive AND the throughput cliff — the 1115MB witness
+      archive now fully validates in 26s at 10MB RssAnon under a 512M
+      no-swap ceiling, BEATING unrar's 39s; sniper parity byte-identical
+      across three pins); plus Einstein's ceiling-gate de-alarm (green
+      runs no longer invoke the kernel OOM killer — MemoryHigh throttle
+      counters observed from outside are the enforcement witness, all
+      six invariants checked, VALIDATE_CEILING_CALIBRATE=1 keeps full
+      OOM calibration for headless CI, scopes named
+      validate-stream-ceiling-*).
       IN FLIGHT elsewhere: libjxlz VarDCT+patches (Samson.jxl named),
       fine-grained JXL finding details (detail seam reserved in the
       malformation records). FOLLOW-UPS (non-blocking, filed): nested
