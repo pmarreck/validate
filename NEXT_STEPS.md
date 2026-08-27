@@ -1,5 +1,27 @@
 # NEXT_STEPS.md
 
+**H.265 update (2026-08-27, EDT):** WPP (entropy_coding_sync) substream
+handling is now implemented in `validateH265IntraCabac` — end_of_subset_one_bit
+consumption, byte-aligned arithmetic engine re-init (9.3.2.5), per-row context
+storage after the second CTU of each row (9.3.2.3) and sync at row starts
+(9.3.2.4), full re-init when the picture is one CTB wide (9.3.1). x265 enables
+WPP by default, so before this every x265 video's tested I-slices desynced at
+the end of CTU row 0. Also added: bounded zero-extension (128 virtual zero
+bits) for CABAC reads past the RBSP end — the Annex-B NAL iterator's
+trailing-zero strip can remove a slice's real final 0x00 bytes (witnessed:
+Cars 2 BluRay IDR whose payload ends in 0x00), and renormalization
+legitimately over-reads; reference decoders zero-extend unconditionally, the
+bound keeps genuine truncation detectable. Regression gate:
+`tests/cli/h265_wpp_cabac` with committed synthetic fixtures under
+`tests/fixtures/h265_wpp/`. REMAINING (this is the next H.265 lever): the
+open residual_coding divergence (4g/4h/4i below) fires on ~every
+complex-content x265 intra slice — bisected empirically: independent of WPP,
+sign-hiding, bit depth, tskip, rdoq. A mostly-black slice now decodes
+byte-exactly (committed fixture: 390/390 CTUs, terminated_cleanly, 2447/2448
+bits); textured CTUs desync mid-residuals. Attack plan: instrumented libde265
+(or ffmpeg) bin trace diffed against VALIDATE_TRACE_H265_BINS on one small
+textured fixture; the trace format already matches libde265's shape.
+
 **Last updated:** 2026-05-21 (EST), end of the marathon H.265 CABAC spec-compliance + TIFF deep-validation session — 12 H.265 commits, 1 TIFF-corruption-detection commit, 1 tiffz coordination commit. The H.265 decoder is now reference-equivalent to ffmpeg/x265 for every committed fix; remaining mixed per-file CTU counts indicate bugs that are NOT in any of the now-spec-correct surfaces (see "Open H.265 areas" below).
 
 This file orients the *next* Claude/Codex/agent session walking into a fresh context window. Assume nothing carries over except what's in this file + the codebase + `MEMORY.md` + `CLAUDE.md`.

@@ -14,6 +14,23 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **H.265 CABAC false-positive WARN on x265 WPP streams (Peter witnessed
+  2026-08-26, Cars 2 BluRay rip; fixed 2026-08-27 ~2:00 PM EDT):** two
+  parsing corrections in `h265_cabac_decoder.zig`: (1) WPP
+  (entropy_coding_sync) substream walk — end_of_subset_one_bit, byte-aligned
+  arithmetic re-init, per-row context storage/sync per spec 7.3.8.1 +
+  9.3.2.2-9.3.2.5; (2) bounded zero-extension (128 bits) for CABAC reads
+  past the RBSP end, matching reference-decoder behavior (Annex-B
+  trailing-zero strip can eat a slice's real final 0x00 bytes). Regression
+  gate `tests/cli/h265_wpp_cabac` + committed synthetic fixtures
+  (`tests/fixtures/h265_wpp/`). The witnessed file's one tested slice
+  improved 56 → 365 of 390 CTUs but still WARNs: its last CTU row carries
+  real content and hits the pre-existing residual-coding divergence class
+  (NEXT_STEPS 4g/4h/4i) — every complex-content x265 intra slice diverges
+  mid-residuals regardless of WPP/signhide/bit-depth (bisected empirically).
+  Next lever for that class: instrumented libde265 bin-trace diff against
+  `VALIDATE_TRACE_H265_BINS` on one small textured fixture.
+
 - [x] **HDD-saturation incident: AV fixture cache root made injectable and
       TMPDIR-independent (Einstein urgent note, 2026-08-21):** three
       concurrent streaming_ceiling runs (main gate + both worktree agents)
