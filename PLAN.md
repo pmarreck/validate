@@ -14,6 +14,30 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **Green ceiling-gate runs no longer invoke the kernel OOM killer
+      (Einstein request 2026-08-27; done 2026-08-27 ~3:15 PM EDT):** the
+      always-OOM `slurper-control` calibration in
+      `tests/cli/streaming_ceiling` fired one deliberate kernel OOM kill per
+      green run, which GNOME surfaced to Peter as an "Application Stopped"
+      notification (4x witnessed 2026-08-27). Replaced on the cgroup path by
+      a `ceiling-bites` control: the same slurper under the production
+      MemoryMax/MemorySwapMax knobs plus MemoryHigh=8M is throttled to a
+      standstill at the boundary while the harness reads the scope's LIVE
+      /sys/fs/cgroup files from outside — asserts memory.max/memory.swap.max
+      == requested, memory.events high > 0, oom_kill == 0 — then stops the
+      scope cleanly (Result=success). Plus a `scope-work` control (24MiB flat
+      anon alloc completes under the knobs). Scopes renamed discoverable
+      (`validate-stream-ceiling-*`). vmhwm fallback keeps its poller-kill
+      slurper (resident path stays covered, no kernel involvement);
+      `VALIDATE_CEILING_CALIBRATE=1` opts back into the full kernel-OOM
+      calibration for headless boxes. New suite test
+      `tests/cli/streaming_ceiling_no_oom` (drives
+      `STREAMING_CEILING_SELFCHECK_ONLY=1`, fixture-free) asserts the green
+      calibration passes with ZERO oom_kill journal evidence — witnessed RED
+      against the legacy behavior (journal oom-kill line), then green. Full
+      gate re-run post-change: 12/12 MATCH, clean journal, all fixture cache
+      HITs.
+
 - [x] **H.265 CABAC false-positive WARN on x265 WPP streams (Peter witnessed
   2026-08-26, Cars 2 BluRay rip; fixed 2026-08-27 ~2:00 PM EDT):** two
   parsing corrections in `h265_cabac_decoder.zig`: (1) WPP

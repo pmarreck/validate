@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# streaming_ceiling_no_oom — MFIC self-check on the streaming_ceiling
+# harness's calibration path (the part that runs on EVERY green gate run):
+#
+#   1. fallback-classifier coverage: with the /proc-poller fallback forced,
+#      a deliberately-breaching slurper must STILL be classified resident
+#      (fail-closed) — the anti-weakening control for the vmhwm mode;
+#   2. zero kernel OOM on the green path: the cgroup-mode calibration must
+#      pass its ceiling-bites/scope-work/streamer controls AND leave zero
+#      oom_kill evidence in the systemd user journal for any
+#      validate-stream-ceiling-*/vstream-* scope. Every kernel OOM kill is
+#      surfaced by GNOME as an "Application Stopped: Device memory is nearly
+#      full" desktop notification (witnessed 4x on 2026-08-27), so a green
+#      run that OOMs on purpose is a bug even when it exits 0.
+#
+# The journal is the independent oracle: it is written by systemd/the kernel,
+# not by the harness under test.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS="$SCRIPT_DIR/streaming_ceiling"
+
+fails=0
+pass() { printf '  PASS: %s\n' "$1"; }
+fail() { printf 'FAIL: %s\n' "$1" >&2; fails=$((fails + 1)); }
+
+[ -f "$HARNESS" ] || { printf 'FAIL: harness missing: %s\n' "$HARNESS" >&2; exit 1; }
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/stream_ceiling_no_oom.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# --- 1. forced-vmhwm: fallback classifier still fail-closed -----------------
+STREAMING_CEILING_SELFCHECK_ONLY=1 STREAMING_CEILING_FORCE_MODE=vmhwm \
+	bash "$HARNESS" >"$tmpdir/vmhwm.out" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	fail "forced-vmhwm selfcheck exited rc=$rc; output tail:"
+	tail -10 "$tmpdir/vmhwm.out" >&2
+else
+	if grep -q 'gate mode: vmhwm (forced' "$tmpdir/vmhwm.out"; then
+		pass "forced-vmhwm mode honored"
+	else
+		fail "forced-vmhwm: mode line missing from output"
+	fi
+	if grep -q 'PASS: slurper-control' "$tmpdir/vmhwm.out"; then
+		pass "fallback classifier: breaching slurper still classified resident (poller kill)"
+	else
+		fail "fallback classifier: slurper-control did not run/pass under forced vmhwm; output tail:"
+		tail -10 "$tmpdir/vmhwm.out" >&2
+	fi
+	if grep -q 'PASS: streamer-control' "$tmpdir/vmhwm.out"; then
+		pass "fallback mode: streamer-control passes"
+	else
+		fail "fallback mode: streamer-control missing/failed"
+	fi
+fi
+
+# --- 2. cgroup green path: calibration passes with ZERO kernel OOM ----------
+# Probe the systemd user manager the same way the harness does; without it
+# there is no cgroup mode and no OOM risk at all — note loudly and finish.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+SDRUN=""
+for c in "$(command -v systemd-run 2>/dev/null)" /run/current-system/sw/bin/systemd-run /usr/bin/systemd-run; do
+	if [ -n "$c" ] && [ -x "$c" ]; then SDRUN="$c"; break; fi
+done
+JCTL=""
+for c in "$(command -v journalctl 2>/dev/null)" /run/current-system/sw/bin/journalctl /usr/bin/journalctl; do
+	if [ -n "$c" ] && [ -x "$c" ]; then JCTL="$c"; break; fi
+done
+
+if [ -z "$SDRUN" ] \
+	|| ! "$SDRUN" --user --scope -q --collect -p MemoryMax=32M -- true >/dev/null 2>&1; then
+	printf 'NOTE: systemd user manager unreachable — cgroup zero-OOM check not applicable here (fallback coverage above still ran)\n'
+else
+	since="$(date '+%Y-%m-%d %H:%M:%S')"
+	STREAMING_CEILING_SELFCHECK_ONLY=1 bash "$HARNESS" >"$tmpdir/cgroup.out" 2>&1
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		fail "cgroup selfcheck exited rc=$rc; output tail:"
+		tail -10 "$tmpdir/cgroup.out" >&2
+	else
+		if grep -q 'gate mode: cgroup' "$tmpdir/cgroup.out"; then
+			pass "cgroup mode active"
+		else
+			fail "cgroup selfcheck did not run in cgroup mode despite reachable user manager"
+		fi
+		if grep -q 'PASS: ceiling-bites' "$tmpdir/cgroup.out"; then
+			pass "ceiling-bites control: knobs verified live, enforcement bites, no kernel kill"
+		else
+			fail "ceiling-bites control missing/failed; output tail:"
+			tail -10 "$tmpdir/cgroup.out" >&2
+		fi
+		if grep -q 'PASS: scope-work' "$tmpdir/cgroup.out"; then
+			pass "scope-work control: within-ceiling allocation completes"
+		else
+			fail "scope-work control missing/failed"
+		fi
+		if grep -q 'PASS: streamer-control' "$tmpdir/cgroup.out"; then
+			pass "streamer-control passes"
+		else
+			fail "streamer-control missing/failed"
+		fi
+	fi
+
+	# THE core assertion: the green calibration left no kernel-OOM evidence
+	# for any harness scope in the systemd user journal (independent oracle).
+	if [ -z "$JCTL" ] || ! "$JCTL" --user -n 1 >/dev/null 2>&1; then
+		printf 'NOTE: user journal unreadable — relying on the harness'\''s in-scope memory.events oom_kill assertion only\n'
+	else
+		oomlines="$("$JCTL" --user --since "$since" --no-pager 2>/dev/null \
+			| grep -E 'vstream-|validate-stream-ceiling-' \
+			| grep -i 'oom' || true)"
+		if [ -z "$oomlines" ]; then
+			pass "journal: zero oom_kill events for harness scopes since $since"
+		else
+			fail "green calibration path invoked the kernel OOM killer (GNOME notifies the desktop on every such kill); journal evidence:"
+			printf '%s\n' "$oomlines" >&2
+		fi
+	fi
+fi
+
+if [ "$fails" -gt 0 ]; then
+	printf 'FAIL: streaming_ceiling_no_oom — %d failure(s)\n' "$fails" >&2
+	exit 1
+fi
+printf 'streaming_ceiling_no_oom: all checks passed\n'
+exit 0
