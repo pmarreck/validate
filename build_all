@@ -8,6 +8,9 @@ cd "$SCRIPT_DIR"
 
 EXEC_NAME="validate"
 
+# Dependency freshness gate — see ./build for the contract.
+"$SCRIPT_DIR/scripts/check-dep-freshness" || exit 1
+
 # Cross-compilation targets available from x86_64-linux in flake.nix
 # Native targets are built by their respective platforms
 declare -A CROSS_TARGETS=(

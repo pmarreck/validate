@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# dep_freshness — gate for scripts/check-dep-freshness (Peter's 2026-08-27
+# ruling: validate's own build must fail when any dependency pin is behind
+# its upstream head, unless VALIDATE_ALLOW_STALE is truthy — and the bypass
+# must print an unmissable advisory banner, not silently proceed).
+#
+# The resolver is INJECTED (VALIDATE_DEP_RESOLVER_CMD) so this test is
+# deterministic and offline: a stub maps upstream URLs to head SHAs (or
+# fails for unreachable hosts). Classification is tested over a SET of
+# dependencies — fresh, stale, frozen, unreachable, and path-vendored
+# together in one zon — not as single-example presence checks.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CHECK="$ROOT/scripts/check-dep-freshness"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+[ -x "$CHECK" ] || fail "checker missing/not executable: $CHECK"
+command -v luajit >/dev/null 2>&1 || { printf 'SKIP: dep_freshness — luajit not on PATH\n' >&2; exit 77; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/dep_freshness.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+FRESH_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+NEW_SHA="cccccccccccccccccccccccccccccccccccccccc"
+FROZEN_SHA="dddddddddddddddddddddddddddddddddddddddd"
+
+# Synthetic zon: one fresh git dep, one STALE tarball dep, one frozen dep
+# (upstream moved but policy-frozen), one unreachable, one path dep.
+cat > "$work/test.zon" <<EOF
+.{
+    .name = .synthetic,
+    .version = "0.0.1",
+    .dependencies = .{
+        .freshdep = .{
+            .url = "git+https://example.test/o/freshdep#$FRESH_SHA",
+            .hash = "freshdep-0.0.1-AAAA",
+        },
+        .staledep = .{
+            .url = "https://example.test/o/staledep/archive/$OLD_SHA.tar.gz",
+            .hash = "staledep-0.0.1-BBBB",
+        },
+        .frozendep = .{
+            .url = "git+https://example.test/o/frozendep#$FROZEN_SHA",
+            .hash = "frozendep-0.0.1-CCCC",
+        },
+        .lostdep = .{
+            .url = "git+https://unreachable.test/o/lostdep#$FRESH_SHA",
+            .hash = "lostdep-0.0.1-DDDD",
+        },
+        .vendored = .{
+            .path = "deps/vendored",
+        },
+    },
+}
+EOF
+
+# Injected resolver: prints upstream head for a URL, exit 1 = unreachable.
+cat > "$work/resolver" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+	*freshdep*) echo "$FRESH_SHA" ;;
+	*staledep*) echo "$NEW_SHA" ;;
+	*frozendep*) echo "$FRESH_SHA" ;;
+	*) exit 1 ;;
+esac
+EOF
+chmod +x "$work/resolver"
+
+run_check() { # run_check [env VAR=val ...] -- extra args appended
+	env -u VALIDATE_ALLOW_STALE "$@" \
+		VALIDATE_DEP_RESOLVER_CMD="$work/resolver" \
+		"$CHECK" --zon "$work/test.zon" --frozen frozendep
+}
+
+# --- 1. stale dep without bypass: FAIL, names the dep and both SHAs -------
+out="$(run_check 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "stale dep did not fail the check"
+printf '%s' "$out" | grep -q "staledep" || fail "stale dep not named: $out"
+printf '%s' "$out" | grep -q "${OLD_SHA:0:12}" || fail "pinned SHA missing from report"
+printf '%s' "$out" | grep -q "${NEW_SHA:0:12}" || fail "upstream SHA missing from report"
+printf '%s' "$out" | grep -q "VALIDATE_ALLOW_STALE" || fail "failure must tell the user about the bypass"
+
+# --- 2. fresh/frozen/unreachable/path never cause failure ------------------
+printf '%s' "$out" | grep -q "UNREACHABLE.*lostdep" || fail "unreachable dep must be reported as advisory"
+printf '%s' "$out" | grep -Eq "FROZEN.*frozendep" || fail "frozen dep must be reported as skipped"
+if printf '%s' "$out" | grep -Eq "STALE.*(freshdep|frozendep|lostdep|vendored)"; then
+	fail "only staledep may be STALE: $out"
+fi
+
+# --- 3. truthy bypass values: exit 0 WITH unmissable banner ----------------
+for v in 1 true TRUE yes Yes on; do
+	out="$(env VALIDATE_ALLOW_STALE="$v" VALIDATE_DEP_RESOLVER_CMD="$work/resolver" \
+		"$CHECK" --zon "$work/test.zon" --frozen frozendep 2>&1)"; rc=$?
+	[ "$rc" -eq 0 ] || fail "bypass value '$v' should exit 0 (got $rc)"
+	printf '%s' "$out" | grep -qi "ADVISORY" || fail "bypass '$v' must print the advisory banner"
+	printf '%s' "$out" | grep -q "staledep" || fail "banner must still name the stale dep ('$v')"
+	printf '%s' "$out" | grep -q "AUTHORIZ" || fail "banner must demand Peter's authorization ('$v')"
+done
+
+# --- 4. falsy values behave exactly like unset -----------------------------
+for v in 0 false no off ""; do
+	env VALIDATE_ALLOW_STALE="$v" VALIDATE_DEP_RESOLVER_CMD="$work/resolver" \
+		"$CHECK" --zon "$work/test.zon" --frozen frozendep >/dev/null 2>&1; rc=$?
+	[ "$rc" -ne 0 ] || fail "falsy bypass value '$v' must NOT bypass"
+done
+
+# --- 5. internet unavailable -> local sibling repos are the oracle ---------
+# Two deps whose upstream is unreachable but whose repo basename exists as a
+# local git repo under the sibling root: one matching the pin (fresh), one
+# ahead of it (stale). Classification must come from the local head, with
+# the exact advisory notice Peter specified.
+sib="$work/siblings"; mkdir -p "$sib"
+mk_repo() { # mk_repo <name> -> echoes head sha
+	git -C "$sib" init -q "$1" 2>/dev/null
+	git -C "$sib/$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x
+	git -C "$sib/$1" rev-parse HEAD
+}
+lf_head="$(mk_repo localfresh)"
+ls_head="$(mk_repo localstale)"
+cat > "$work/local.zon" <<EOF
+.{
+    .name = .synthetic,
+    .version = "0.0.1",
+    .dependencies = .{
+        .localfresh = .{
+            .url = "git+https://unreachable.test/o/localfresh#$lf_head",
+            .hash = "localfresh-0.0.1-AAAA",
+        },
+        .localstale = .{
+            .url = "https://unreachable.test/o/localstale/archive/$OLD_SHA.tar.gz",
+            .hash = "localstale-0.0.1-BBBB",
+        },
+    },
+}
+EOF
+out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver" VALIDATE_SIBLING_ROOT="$sib" \
+	"$CHECK" --zon "$work/local.zon" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "locally-stale dep must fail the check (got rc=0): $out"
+printf '%s' "$out" | grep -q "Internet unavailable; relying on local repository state" \
+	|| fail "missing the local-fallback notice: $out"
+printf '%s' "$out" | grep -Eq "STALE.*localstale" || fail "localstale not classified STALE via sibling: $out"
+if printf '%s' "$out" | grep -Eq "STALE.*localfresh|UNREACHABLE.*localfresh"; then
+	fail "localfresh must be fresh via sibling head: $out"
+fi
+printf '%s' "$out" | grep -q "${ls_head:0:12}" || fail "sibling head SHA missing from stale report"
+
+# --- 6. all-fresh zon: exit 0, silent on stdout success path ---------------
+cat > "$work/fresh.zon" <<EOF
+.{
+    .name = .synthetic,
+    .version = "0.0.1",
+    .dependencies = .{
+        .freshdep = .{
+            .url = "git+https://example.test/o/freshdep#$FRESH_SHA",
+            .hash = "freshdep-0.0.1-AAAA",
+        },
+    },
+}
+EOF
+out="$(env VALIDATE_DEP_RESOLVER_CMD="$work/resolver" "$CHECK" --zon "$work/fresh.zon" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "all-fresh zon must pass (got $rc: $out)"
+if printf '%s' "$out" | grep -Eq "STALE|ADVISORY"; then fail "fresh pass must not warn: $out"; fi
+
+echo "PASS: dep freshness gate classifies fresh/stale/frozen/unreachable correctly, bypass is loud, falsy is not truthy"

@@ -1,0 +1,193 @@
+#!/usr/bin/env luajit
+-- check-dep-freshness — fail the build when any build.zig.zon dependency
+-- pin is behind its upstream head (Peter's 2026-08-27 ruling), unless
+-- VALIDATE_ALLOW_STALE is truthy — in which case an unmissable advisory
+-- banner demands Peter's authorization and the build proceeds. Advisory by
+-- design, not a hard control; also the fleet's early-warning for two
+-- codebases pinning different versions of one dependency (the diamond
+-- drift that produced today's lerc/zstd closure holes).
+--
+-- Staleness oracle: `git ls-remote <upstream> HEAD` (network!), so this
+-- runs in ./build OUTSIDE the nix sandbox. The resolver is injectable via
+-- VALIDATE_DEP_RESOLVER_CMD (command receiving the upstream URL, printing
+-- the head SHA; nonzero exit = unreachable) so tests are offline and
+-- deterministic. Unreachable upstreams are ADVISORY (offline must never
+-- brick a build); confirmed staleness is what fails.
+-- complexity: O(deps) with one network round-trip per non-frozen dep.
+
+local function die(msg, rc)
+	io.stderr:write("check-dep-freshness: " .. msg .. "\n")
+	os.exit(rc or 2)
+end
+
+-- --- args -------------------------------------------------------------------
+local zon_path = "build.zig.zon"
+local frozen = {}
+do
+	local i = 1
+	while i <= #arg do
+		local a = arg[i]
+		if a == "--zon" then
+			i = i + 1; zon_path = arg[i] or die("missing value for --zon")
+		elseif a == "--frozen" then
+			i = i + 1
+			for name in (arg[i] or die("missing value for --frozen")):gmatch("[^,]+") do
+				frozen[name] = true
+			end
+		elseif a == "-h" or a == "--help" then
+			print("Usage: check-dep-freshness [--zon PATH] [--frozen name1,name2,...]")
+			print("Env: VALIDATE_ALLOW_STALE (truthy bypasses with loud advisory),")
+			print("     VALIDATE_DEP_RESOLVER_CMD (test injection; default: git ls-remote)")
+			os.exit(0)
+		else
+			die("unknown argument: " .. a)
+		end
+		i = i + 1
+	end
+end
+
+-- Deliberately-frozen third-party pins (immutable-by-policy; see zon
+-- comments — moving-branch drift broke CI 2026-06-05, so these are pinned
+-- on purpose and upstream movement is expected, not staleness). Peter can
+-- empty this to make the gate fully strict.
+local default_frozen = { zlib = true, sqlite3 = true, wavpack_src = true,
+	toml = true, ["zig-xml"] = true, libopenmpt = true }
+if not next(frozen) then frozen = default_frozen end
+
+local function truthy(v)
+	if not v then return false end
+	v = v:lower()
+	return v == "1" or v == "true" or v == "yes" or v == "on" or v == "y"
+end
+local allow_stale = truthy(os.getenv("VALIDATE_ALLOW_STALE"))
+
+-- --- parse zon deps ----------------------------------------------------------
+local f = io.open(zon_path, "r") or die("cannot open " .. zon_path)
+local zon = f:read("*a"); f:close()
+local deps_body = zon:match("%.dependencies%s*=%s*%.{(.*)")
+	or die("no .dependencies block in " .. zon_path)
+
+-- Each dep: .name = .{ ... } — walk name headers, capture until the next
+-- header at the same indent (regex-adequate: zon here is machine-written,
+-- flat, and comments carry no dep-header shapes).
+local deps = {}
+for name, body in deps_body:gmatch("%.@?\"?([%w_%-]+)\"?%s*=%s*%.{(.-)},\n") do
+	local url = body:match('%.url%s*=%s*"([^"]+)"')
+	local path = body:match('%.path%s*=%s*"([^"]+)"')
+	if url or path then
+		deps[#deps + 1] = { name = name, url = url, path = path }
+	end
+end
+if #deps == 0 then die("parsed zero dependencies from " .. zon_path .. " — parser broken?") end
+
+-- --- pin extraction + upstream derivation ------------------------------------
+-- git+https://host/o/repo#SHA      -> upstream git+URL minus fragment
+-- https://host/o/repo/archive/SHA.tar.gz -> https://host/o/repo
+local function pin_of(url)
+	local base, sha = url:match("^git%+(.-)#(%x+)$")
+	if base and #sha == 40 then return sha, base end
+	local repo, tsha = url:match("^(https://.-)/archive/(%x+)%.tar%.gz$")
+	if repo and #tsha == 40 then return tsha, repo end
+	return nil
+end
+
+local resolver = os.getenv("VALIDATE_DEP_RESOLVER_CMD")
+local sibling_root = os.getenv("VALIDATE_SIBLING_ROOT") or (os.getenv("HOME") .. "/Code")
+local announced_local_fallback = false
+
+-- Offline oracle (Peter, 2026-08-27): when the upstream is unreachable, the
+-- local sibling checkout under ~/Code/<repo-basename> stands in — presumed
+-- current by fleet convention (a stated assumption, not a verified one).
+local function sibling_head(upstream_url)
+	local base = upstream_url:match("([^/]+)$")
+	if not base then return nil end
+	base = base:gsub("%.git$", "")
+	local dir = sibling_root .. "/" .. base
+	local p = io.popen(string.format("git -C '%s' rev-parse HEAD 2>/dev/null", dir), "r")
+	if not p then return nil end
+	local out = (p:read("*a") or ""):match("(%x+)")
+	local ok = p:close()
+	if not ok or not out or #out ~= 40 then return nil end
+	if not announced_local_fallback then
+		io.stderr:write("Internet unavailable; relying on local repository state\n")
+		announced_local_fallback = true
+	end
+	return out
+end
+
+local function upstream_head(upstream_url)
+	local cmd
+	if resolver then
+		cmd = string.format("%s '%s' 2>/dev/null", resolver, upstream_url)
+	else
+		cmd = string.format(
+			"git ls-remote '%s' HEAD 2>/dev/null | head -1 | cut -f1", upstream_url)
+	end
+	local p = io.popen(cmd, "r")
+	if not p then return nil end
+	local out = (p:read("*a") or ""):match("(%x+)")
+	local ok = p:close()
+	if not ok or not out or #out ~= 40 then return nil end
+	return out
+end
+
+-- --- classify -----------------------------------------------------------------
+local stale, unreachable, unpinned = {}, {}, {}
+for _, d in ipairs(deps) do
+	if d.path then
+		-- vendored: nothing to check
+	elseif frozen[d.name] then
+		io.stderr:write(string.format("FROZEN      %-14s pin frozen by policy, upstream not consulted\n", d.name))
+	else
+		local sha, upstream = pin_of(d.url)
+		if not sha then
+			unpinned[#unpinned + 1] = d.name
+			io.stderr:write(string.format("UNPINNED    %-14s url has no commit pin (advisory): %s\n", d.name, d.url))
+		else
+			local head = upstream_head(upstream) or sibling_head(upstream)
+			if not head then
+				unreachable[#unreachable + 1] = d.name
+				io.stderr:write(string.format("UNREACHABLE %-14s cannot resolve upstream head (advisory, offline?)\n", d.name))
+			elseif head ~= sha then
+				stale[#stale + 1] = { name = d.name, pinned = sha, head = head, upstream = upstream }
+				io.stderr:write(string.format("STALE       %-14s pinned %s.. upstream %s..  %s\n",
+					d.name, sha:sub(1, 12), head:sub(1, 12), d.upstream or upstream))
+			end
+		end
+	end
+end
+
+-- --- verdict ------------------------------------------------------------------
+if #stale == 0 then os.exit(0) end
+
+local RED, YEL, BOLD, OFF = "\27[31m", "\27[33m", "\27[1m", "\27[0m"
+if os.getenv("NO_COLOR") then RED, YEL, BOLD, OFF = "", "", "", "" end
+
+if not allow_stale then
+	io.stderr:write(string.format(
+		"%s%sBUILD BLOCKED: %d dependency pin(s) are behind upstream (listed above).%s\n" ..
+		"Update the pins (zig fetch --save=<dep> <url>#<head>) or, with Peter's\n" ..
+		"authorization, bypass once via VALIDATE_ALLOW_STALE=1.\n",
+		RED, BOLD, #stale, OFF))
+	os.exit(1)
+end
+
+-- Truthy bypass: proceed, but make it impossible to miss.
+local bar = string.rep("█", 74)
+io.stderr:write(string.format([[
+%s%s%s
+%s██  ADVISORY — STALE DEPENDENCY BYPASS IN EFFECT (VALIDATE_ALLOW_STALE)  ██%s
+%s%s%s
+%sThis build knowingly uses %d out-of-date dependency pin(s):%s
+]], RED, bar, OFF, RED .. BOLD, OFF, RED, bar, OFF, YEL .. BOLD, #stale, OFF))
+for _, s in ipairs(stale) do
+	io.stderr:write(string.format("%s  ██ %s: pinned %s.. but upstream is %s..%s\n",
+		YEL, s.name, s.pinned:sub(1, 12), s.head:sub(1, 12), OFF))
+end
+io.stderr:write(string.format([[
+%sThis bypass requires PETER'S AUTHORIZATION. If Peter did not authorize
+this build, STOP and update the pins instead. Divergent pins across
+codebases are how link-closure holes ship (witnessed 2026-08-27).%s
+%s%s%s
+]], RED .. BOLD, OFF, RED, bar, OFF))
+os.exit(0)

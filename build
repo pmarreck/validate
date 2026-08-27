@@ -14,6 +14,14 @@ run() {
   }
 }
 
+# Dependency freshness gate (Peter 2026-08-27): the build FAILS when any
+# build.zig.zon pin is behind its upstream head, unless VALIDATE_ALLOW_STALE
+# is truthy — which prints an unmissable advisory requiring Peter's
+# authorization. Offline falls back to local sibling repos. Runs OUTSIDE the
+# nix sandbox by necessity (network); Mechatron's flake targets are
+# unaffected. Gated by tests/cli/dep_freshness.
+run "$SCRIPT_DIR/scripts/check-dep-freshness"
+
 optimize="ReleaseFast"
 if [[ "${1:-}" == "debug" ]]; then
   optimize="Debug"
