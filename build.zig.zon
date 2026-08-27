@@ -131,8 +131,8 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#29e71e55216bba67e1432defdbc9877c070db918",
-            .hash = "tiffz-0.1.0-qutJATqqzwEUrMNfzSQrfaGeDHSUxklBWRtgExdg63eN",
+            .url = "git+https://github.com/pmarreck/tiffz#9ea64ff5860672955bec6f354a9a18b2ab99bf63",
+            .hash = "tiffz-0.1.0-qutJARDbzwGQN5Xb9wWgMAo_E02sRQTXO0ZZg7TuSz4x",
         },
         // rawz: proprietary camera-RAW vendor semantics (PEF private Huffman,
         // packed-12, vendor classifiers). Consumed as a source module with
