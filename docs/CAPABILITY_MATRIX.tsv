@@ -40,7 +40,7 @@ cif	scientific	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
 coff	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 cpr	project	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 cpt	archive	full	full	1/1	5/5	transparent	-	-	deep	-
-cr2	image	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
+cr2	image	full	full	1/1	0/0	mixed	-	-	deep	-
 cr3	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
 csv	data	structural	structural	2/2	0/6	opaque	-	-	structural-ceiling	-
 cwk	document	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
