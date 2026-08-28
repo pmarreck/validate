@@ -30,12 +30,28 @@ at the bottom. Older completed sections were rolled up — full history lives in
       claims wording: checksum-less JPEG entropy has a real ceiling below
       100%; accounting invariants typically reach 60-85%.
 
-- [ ] **Coverage-test speed/concurrency (Peter, 2026-08-27 evening):**
-      agent in flight — in-memory trial mutation (read once, per-trial COW
-      of touched region, byte restore), RAM-budget-honest tmpfs fallback,
-      MFIC bar = identical seed -> identical per-trial tally (PDF witness
-      303/400 @ seed 1787878036, 106.44s baseline), worker-scaling table
-      1/4/8/16 before/after.
+- [ ] **Coverage-test memory fix + speedup — CODE DONE, INTEGRATION HELD
+      (hold by Peter/Einstein 2026-08-27 21:25 EDT after the contained
+      21:22:44 OOM still raised GNOME's alarm):** work complete on branch
+      `worktree-agent-ac6c7cdf6036910fa` (commits 5a589f90e, 2e0b681b7,
+      6e1ad7d08), unit-suite 1995/0. ROOT CAUSE of the 96GB OOM (both
+      earlier theories disproven with evidence): (jobs+1)x file-size
+      private worker copies TIMES a jobs=auto inner-fanout hole (128
+      workers x 42 nested PDF image decoders = 5,376 concurrent
+      validations). FIX: memfd + MAP_PRIVATE copy-on-write work views
+      (~1x file total; MADV_DONTNEED resync) + process-global coverage
+      inner-jobs cap. DO NOT integrate or run ./test until the hold is
+      RELEASED (the new tests/cli/test_coverage_bounded_memory executes
+      coverage; forbidden under hold). POST-RELEASE CHECKLIST (also in
+      the worktree PLAN): (1) full gate; (2) Littlefish 400 rounds seed
+      1787878036 jobs=auto under 8G MemoryHigh scope (no-OOM observation
+      pattern) must reproduce 303/400, peak ~<=1GB vs ~96GB; (3) scaling
+      table jobs=1/4/8/16. KNOWN RISK: inner=1 routes PDF images down
+      the sequential path (parallel gated at pdf_image_validator.zig
+      ~1217) while the baseline ran parallel — a tally divergence means
+      a sequential-vs-parallel determinism bug needing its own red test
+      (floor the cap at 2 to bisect; VALIDATE_COVERAGE_TRACE for
+      per-trial diffing).
 
 - [x] **H.265 CABAC residual-coding divergence class closed (NEXT_STEPS
       4g/4h/4i; Peter's directive 2026-08-26 "what about H.265?"; done
