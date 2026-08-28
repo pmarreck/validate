@@ -14,6 +14,29 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **JPEG entropy-region detection (Peter's Littlefish report,
+      2026-08-27 evening):** witnessed: a real scanned JPEG extracted from
+      the 49MB paperwork PDF detects only 24.0% of single-byte flips
+      (sniper 37/154) through the jpegz path; the PDF's composite ~52-65%
+      is carried by its zlib-checksummed Flate streams. Work order filed
+      with jpegz (five accounting-invariant strictness asks: exact
+      consumption at EOI, MCU count, restart cadence, AC-run overflow,
+      progressive bounds; FP bar = zero new specificity-corpus rejects).
+      jpegz ACKed as their top PLAN item — NO DATE: Peter deferred the
+      fleet schedule for personal reasons; they signal with SHA when the
+      mutation sweep shows the gain, then tiffz re-pin -> ours. On arrival:
+      re-run Littlefish end-to-end (seed 1787878036 baseline: 303/400,
+      sniper 52.5%) and report before/after to Peter. Physics note for
+      claims wording: checksum-less JPEG entropy has a real ceiling below
+      100%; accounting invariants typically reach 60-85%.
+
+- [ ] **Coverage-test speed/concurrency (Peter, 2026-08-27 evening):**
+      agent in flight — in-memory trial mutation (read once, per-trial COW
+      of touched region, byte restore), RAM-budget-honest tmpfs fallback,
+      MFIC bar = identical seed -> identical per-trial tally (PDF witness
+      303/400 @ seed 1787878036, 106.44s baseline), worker-scaling table
+      1/4/8/16 before/after.
+
 - [x] **H.265 CABAC residual-coding divergence class closed (NEXT_STEPS
       4g/4h/4i; Peter's directive 2026-08-26 "what about H.265?"; done
       2026-08-27 ~7:45 PM EDT):** bin-trace differential against an
