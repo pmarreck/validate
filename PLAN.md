@@ -14,6 +14,33 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **H.265 CABAC residual-coding divergence class closed (NEXT_STEPS
+      4g/4h/4i; Peter's directive 2026-08-26 "what about H.265?"; done
+      2026-08-27 ~7:45 PM EDT):** bin-trace differential against an
+      instrumented libde265 oracle (dec265 -vvv, -DDE265_LOG_TRACE cmake
+      build in session scratchpad; libde265 deliberately NOT in the build
+      graph). Normalized both traces to (kind, bit, post-renorm range) per
+      bin and diffed to the first divergent bin, fixed to spec, repeated:
+      divergence sequence 29 → 73 → 160 → 177 → 786 → 6114 → MATCH (all
+      17614 bins identical on the committed textured witness). Fixes, each
+      with spec clause: transposed diag scan tables (6.5.3); cu_qp_delta
+      once per QG via IsCuQpDeltaCoded (7.3.8.4/7.3.8.10); last_sig prefix
+      ctxShift formulas (9.3.4.2.3); initType-0 init values for last_sig
+      prefixes + chroma sig_coeff (spec initValue tables / ffmpeg
+      init_values[0]); chroma +16/+4 offsets for greater1/greater2 contexts;
+      chroma-8x8 scanIdx restriction (7.4.9.11). Plus parsePps
+      undefined-memory UB (build-mode-dependent header misparse, 96-vs-32
+      header bits on the SAME stream — ReleaseFast read the unset fields as
+      0 by luck). New anomaly (d) complete-but-unterminated; committed
+      fixture pair + gate tests/cli/h265_residual_cabac (red witnessed:
+      corrupt twin OK pre-criterion → WARN post). Cars 2 witness: first IDR
+      slice 390/390 terminated_cleanly, verdict WARN → OK. WPP gate stays
+      green. Sweeps (sniper/bolter/shotgun, seed 42, 150/mode, both h265
+      fixtures) pre-vs-post: recorded in session report. HEIC corpus
+      verdicts unchanged (separate premature-term class remains; see
+      NEXT_STEPS header for the follow-up lever). Commits e6bbb9069,
+      55fdf379e, 820fbf52c.
+
 - [x] **Green ceiling-gate runs no longer invoke the kernel OOM killer
       (Einstein request 2026-08-27; done 2026-08-27 ~3:15 PM EDT):** the
       always-OOM `slurper-control` calibration in

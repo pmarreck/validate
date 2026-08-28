@@ -1,5 +1,42 @@
 # NEXT_STEPS.md
 
+**H.265 residual-coding divergence class CLOSED (2026-08-27 evening, EDT):**
+the 4g/4h/4i class is fixed and bin-exact-verified. Method: per-bin
+differential trace (`VALIDATE_TRACE_H265_BINS`) against an instrumented
+libde265 (`dec265 -vvv`, cmake `-DDE265_LOG_TRACE` build in scratchpad —
+oracle only, NEVER a build dep). Six decoder defects fixed in sequence, each
+isolated by first-divergent-bin (29 → 73 → 160 → 177 → 786 → 6114 → MATCH):
+(1) all up-right diagonal scan tables were TRANSPOSED vs spec 6.5.3;
+(2) cu_qp_delta decoded per-TU instead of once per quantization group
+(7.3.8.4/7.3.8.10 IsCuQpDeltaCoded); (3) last_sig_coeff prefix ctxShift
+wrong for 8x8 luma and all chroma (9.3.4.2.3); (4) initType-0 init values
+wrong for both last_sig prefix tables (from idx 3; chroma at CNU) and the
+17 chroma sig_coeff entries; (5) g1/g2 chroma context offsets (+16/+4)
+missing; (6) mode-based scanIdx wrongly applied to chroma 8x8 TBs
+(7.4.9.11). PLUS: parsePps branched on undefined memory (`= undefined`
+discards struct defaults; deblocking/override fields unset when
+control_present=0) — build-mode-dependent slice-header misparse (96 vs 32
+header bits on the same stream). Evidence: committed textured fixture
+`tests/fixtures/h265_residual/textured_main10_aq.mp4` decodes ALL 17614
+bins identical to dec265; Cars 2 witness first IDR slice 390/390
+terminated_cleanly, verdict WARN → OK. New anomaly (d)
+complete-but-unterminated + corrupt twin gate `tests/cli/h265_residual_cabac`.
+REMAINING (separate class): HEIC/Apple-encoder streams still premature-term
+(autumn 126/345, crowd 173/345, spring 277/345, summer 209/345, winter
+212/345, sample 8/64-per-tile with anomalies — but corpus verdicts unchanged:
+5x OK + sample WARN, identical pre/post). The old higher counts (e.g. crowd
+"345/345") were garbage walks of a desynced engine, not signal. Next lever
+for HEIC: same bin-trace method, one HEIC tile vs dec265 — likely suspects:
+SAO param parse (Apple enables SAO; x265 fixtures had sao=0), or
+scaling-list/PCM paths. The oracle build recipe + normalizer/diff scripts
+are described in PLAN.md's session record. Known latent gap (no witness
+yet, transform_skip off in all our x265 fixtures): transformUnit decodes
+the chroma transform_skip_flags BEFORE the luma residual; spec 7.3.8.11
+codes each transform_skip_flag at the top of its own residual_coding call
+(luma resid, then cb tskip+resid, then cr) — bit-order divergence on any
+tskip-enabled stream. Fix by moving tskip decode into residualCoding when
+a tskip witness appears.
+
 **H.265 update (2026-08-27, EDT):** WPP (entropy_coding_sync) substream
 handling is now implemented in `validateH265IntraCabac` — end_of_subset_one_bit
 consumption, byte-aligned arithmetic engine re-init (9.3.2.5), per-row context
