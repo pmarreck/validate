@@ -42,6 +42,32 @@ Integration: LLMsend `validate` session to integrate+push, CC Einstein.
 - Output: `docs/index.html` (en = x-default), `docs/coverage/`,
   `docs/<slug>/{index.html,coverage/}` ×49, shared `docs/assets/`.
 
+## 2026-09-04 release-publication correction
+
+The live site still rendered five MEGA links that expired on 2026-07-22. The
+parser correctly classifies them as expired, but static GitHub Pages output
+does not regenerate itself when time passes. Regenerate and publish without
+those links immediately.
+
+The permanent repair belongs to the Mecha Validate release transaction:
+
+- [ ] Replace the seven-day SigV4-only `current_releases.toml` contract with a
+  schema-validated public-release projection derived from the accepted signed
+  update manifest.
+- [ ] Use permanent per-platform download endpoints; never bake expiring links
+  into static pages.
+- [ ] Bind the rendered version and capability matrix to exact Validate and GUI
+  commits and their common Build ID.
+- [ ] Have the release command generate in a clean worktree, run `site/test`,
+  show the proposed diff in dry-run mode, publish, and verify the live version
+  and platform links.
+- [ ] Add a mechanical site-versus-manifest health check that alerts on drift
+  but never republishes by itself.
+
+The cross-project architecture and acceptance gates are recorded in
+`$HOME/Code/validate_gui/docs/MECHA_VALIDATE_RELEASE_RUNBOOK.md`; commercial
+policy remains in the private Obsidian `MECHA_RELEASE_PLAN.md`.
+
 ## Checkboxes
 - [x] Scaffold site/ + failing tests (locales registry, zig_catalog, coverage) — 2026-06-11 ~15:30 EST
 - [x] Coverage data pipeline (report rows + MFIC TSV cross-checks + per-OS flags) — 2026-06-11 ~15:50 EST
